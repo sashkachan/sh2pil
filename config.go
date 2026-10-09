@@ -132,6 +132,50 @@ func configChain() []string {
 	return chain
 }
 
+// writeConfigOverlay sets one key in the local overlay, which the chain reads after every
+// other file.  An existing line for the key is replaced so the file does not grow a second
+// spelling of the setting, and the file is swapped into place atomically so a read that lands
+// mid-write sees the old file or the new one, never a mixture.
+func writeConfigOverlay(key, value string) error {
+	main := configFile()
+	if main == "" {
+		return fmt.Errorf("no configuration path is known")
+	}
+	path := filepath.Join(filepath.Dir(main), "config.d", "90-local.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	var lines []string
+	if data, err := os.ReadFile(path); err == nil {
+		lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) == 1 && strings.TrimSpace(lines[0]) == "" {
+			lines = nil
+		}
+	}
+	wanted := key + ": " + value
+	replaced := false
+	out := make([]string, 0, len(lines)+1)
+	for _, existing := range lines {
+		name, _, _ := strings.Cut(strings.SplitN(existing, "#", 2)[0], ":")
+		if strings.TrimSpace(name) == key {
+			if !replaced {
+				out = append(out, wanted)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, existing)
+	}
+	if !replaced {
+		out = append(out, wanted)
+	}
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, []byte(strings.Join(out, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
+}
+
 // Config is the effective settings for one run.  Values come from defaults, then the main
 // file, then each overlay, so a later line wins.  Values holds every scalar that was read,
 // including the keys sh2pil-open owns, so inspection can show the whole file.

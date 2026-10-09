@@ -110,7 +110,7 @@ func TestToolFormsLastValueWins(t *testing.T) {
 		}
 	}
 	writeConfig(t, "tools:\n  file_browser: ranger\n")
-	writeConfigOverlay(t, "90-local.yaml", "file_browser: yazi\n")
+	writeConfigOverlayFile(t, "90-local.yaml", "file_browser: yazi\n")
 	if got := loadConfig().FileBrowser; got != "yazi" {
 		t.Fatalf("overlay flat key = %q, want yazi", got)
 	}

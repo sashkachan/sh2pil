@@ -24,11 +24,23 @@ func holdsAll(haystack []string, needles ...string) bool {
 	return true
 }
 
+// paletteRows splits the entries the way the tests reason about them: the names, and the
+// section each one belongs to.
+func paletteRows(entries []paletteEntry) ([]string, []string) {
+	actions := make([]string, 0, len(entries))
+	sections := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		actions = append(actions, entry.name)
+		sections = append(sections, entry.section)
+	}
+	return actions, sections
+}
+
 // TestPalettePutsTheDeleteInterfaceFirst pins the one ordering promise the palette makes: the
 // command a reader opened it for is the first row, under its own heading.
 func TestPalettePutsTheDeleteInterfaceFirst(t *testing.T) {
 	m := &model{keymap: buildKeymap(nil)}
-	actions, sections := m.paletteEntriesFor(session{})
+	actions, sections := paletteRows(m.paletteEntriesFor(session{}))
 	if len(actions) == 0 {
 		t.Fatal("the palette is empty")
 	}
@@ -79,7 +91,7 @@ func TestPalettePutsTheDeleteInterfaceFirst(t *testing.T) {
 // palette instead of leaving a row that would do nothing.
 func TestPaletteSkipsAnUnboundCommand(t *testing.T) {
 	m := &model{keymap: buildKeymap(map[string]string{"list.fork": "none"})}
-	actions, _ := m.paletteEntriesFor(session{})
+	actions, _ := paletteRows(m.paletteEntriesFor(session{}))
 	if holdsAll(actions, "list.fork") {
 		t.Errorf("an unbound command is still offered: %v", actions)
 	}
@@ -136,8 +148,12 @@ func TestKeyMsgForChordRebuildsTheKey(t *testing.T) {
 // chord cannot be rebuilt would be a menu entry that fails on the reader.
 func TestEveryPaletteRowCanBeRun(t *testing.T) {
 	m := &model{keymap: buildKeymap(nil)}
-	actions, _ := m.paletteEntriesFor(session{})
+	actions, _ := paletteRows(m.paletteEntriesFor(session{}))
 	for _, action := range actions {
+		if isPaletteMeta(action) {
+			// A meta row has no chord of its own; its dispatch is checked elsewhere.
+			continue
+		}
 		chords := m.chordsOf(action)
 		if len(chords) == 0 {
 			t.Errorf("%s is offered with no key", action)
@@ -152,7 +168,7 @@ func TestEveryPaletteRowCanBeRun(t *testing.T) {
 // TestPaletteRunsTheBoundAction pins the dispatch: choosing a row does what its key does.
 func TestPaletteRunsTheBoundAction(t *testing.T) {
 	m := &model{keymap: buildKeymap(nil), showPrev: true}
-	actions, _ := m.paletteEntriesFor(session{})
+	actions, _ := paletteRows(m.paletteEntriesFor(session{}))
 	index := -1
 	for at, action := range actions {
 		if action == "list.preview_toggle" {
@@ -297,5 +313,124 @@ func TestPruneReadsTheConfiguredStores(t *testing.T) {
 	_, all := (&model{}).pruneHelper("1d", false)
 	if !strings.Contains(strings.Join(all, " "), "--harness all") {
 		t.Errorf("an unconfigured picker reads %q, want all stores", all)
+	}
+}
+
+// TestPaletteOpeners pins the three ways in: alt+p, ctrl+k, and the colon, all landing on the
+// same action, so rebinding one moves all three.
+func TestPaletteOpeners(t *testing.T) {
+	km := buildKeymap(nil)
+	for _, chord := range []string{"alt+p", "ctrl+k", ":"} {
+		if got := km.resolve(keyContextList, chord); got != "alt+p" {
+			t.Errorf("resolve(%q) = %q, want alt+p", chord, got)
+		}
+	}
+}
+
+// TestPaletteFilterNarrowsAndRanks pins the filter: a query keeps only matching rows, and a
+// subsequence is a match of last resort.
+func TestPaletteFilterNarrowsAndRanks(t *testing.T) {
+	m := &model{keymap: buildKeymap(nil)}
+	m.paletteAll = m.paletteEntriesFor(session{})
+	m.name = field{text: "reconnect"}
+	m.refilterPalette()
+	if len(m.toolChoices) == 0 || m.toolChoices[0] != "list.reconnect" {
+		t.Fatalf("filter reconnect = %#v, want list.reconnect first", m.toolChoices)
+	}
+	m.name = field{text: "rld"}
+	m.refilterPalette()
+	if !holdsAll(m.toolChoices, "meta.reload_config") {
+		t.Fatalf("subsequence rld = %#v, want the reload row", m.toolChoices)
+	}
+	m.name = field{text: ""}
+	m.refilterPalette()
+	if len(m.toolChoices) != len(m.paletteAll) {
+		t.Fatalf("clearing the filter left %d of %d rows", len(m.toolChoices), len(m.paletteAll))
+	}
+}
+
+// TestPaletteEscapeClearsTheFilterFirst pins the two-step escape: the first press keeps the
+// palette and drops the query, the second closes it.
+func TestPaletteEscapeClearsTheFilterFirst(t *testing.T) {
+	m := &model{keymap: buildKeymap(nil), modal: "palette"}
+	m.paletteAll = m.paletteEntriesFor(session{})
+	m.name = field{text: "recon"}
+	m.refilterPalette()
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*model)
+	if m.modal != "palette" || m.name.text != "" {
+		t.Fatalf("first esc = modal %q, filter %q; want the palette open and the filter cleared",
+			m.modal, m.name.text)
+	}
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*model)
+	if m.modal != "" {
+		t.Fatalf("second esc = modal %q, want closed", m.modal)
+	}
+}
+
+// TestPaletteValueRowsCycleInPlace pins the mode row: enter changes the session value and
+// leaves the palette open, because ctrl+s is what persists it.
+func TestPaletteValueRowsCycleInPlace(t *testing.T) {
+	m := &model{keymap: buildKeymap(nil), modal: "palette", mode: "keybind"}
+	m.paletteAll = m.paletteEntriesFor(session{})
+	m.refilterPalette()
+	index := -1
+	for at, name := range m.toolChoices {
+		if name == paletteMetaMode {
+			index = at
+		}
+	}
+	if index < 0 {
+		t.Fatal("the palette has no mode row")
+	}
+	updated, _ := m.choosePalette(index)
+	m = updated.(*model)
+	if m.mode != "prompt" {
+		t.Fatalf("mode after the row = %q, want prompt", m.mode)
+	}
+	if m.paletteChanged != "mode=prompt" {
+		t.Fatalf("paletteChanged = %q, want mode=prompt", m.paletteChanged)
+	}
+	if m.modal != "palette" {
+		t.Fatalf("the value row closed the palette; it must stay for ctrl+s")
+	}
+}
+
+// TestPaletteOffersForgetOnlyForAHost pins that the master row appears only where there is a
+// master to forget: this machine has none.
+func TestPaletteOffersForgetOnlyForAHost(t *testing.T) {
+	local := &model{keymap: buildKeymap(nil)}
+	if actions, _ := paletteRows(local.paletteEntriesFor(session{})); holdsAll(actions, paletteMetaForget) {
+		t.Fatalf("this machine is offered a master to forget: %v", actions)
+	}
+	remote := &model{keymap: buildKeymap(nil), targets: []target{{Server: "build-host"}}}
+	actions, _ := paletteRows(remote.paletteEntriesFor(session{}))
+	if !holdsAll(actions, paletteMetaForget) {
+		t.Fatalf("a host is not offered its master: %v", actions)
+	}
+}
+
+// TestPaletteReloadReReadsTheConfig pins the reload row: the settings the model holds follow
+// the file chain again.
+func TestPaletteReloadReReadsTheConfig(t *testing.T) {
+	writeConfig(t, "mode: prompt\n")
+	m := &model{keymap: buildKeymap(nil), mode: "keybind"}
+	note := m.reloadConfig()
+	if m.mode != "prompt" {
+		t.Fatalf("mode after reload = %q, want prompt", m.mode)
+	}
+	if !strings.Contains(note, "reloaded") {
+		t.Fatalf("reload note = %q", note)
+	}
+}
+
+// TestPaletteDoctorLineNamesTheBuildAndTheConfig pins the one-line check.
+func TestPaletteDoctorLineNamesTheBuildAndTheConfig(t *testing.T) {
+	writeConfig(t, "")
+	m := &model{keymap: buildKeymap(nil)}
+	line := m.doctorLine()
+	if !strings.Contains(line, "sh2pil "+version) || !strings.Contains(line, "config source") {
+		t.Fatalf("doctor line = %q", line)
 	}
 }

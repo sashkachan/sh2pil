@@ -473,6 +473,19 @@ class ZmxSessionsTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[1].kwargs['env'], sh2pil_open.ssh_env())
         self.assertTrue(popen.called)
 
+    def test_zmx_connect_forget_ends_the_master_and_opens_nothing(self):
+        # A forget is the master half of a restart, with no establish after it: the reader
+        # who asked to forget does not want a touch now, and the next read reconnects.
+        alive = sh2pil_open.subprocess.CompletedProcess(['ssh'], 0, b'', b'')
+        with patch.object(sh2pil_open.subprocess, 'run', return_value=alive) as run, \
+             patch.object(sh2pil_open.subprocess, 'Popen') as popen:
+            self.assertEqual(sh2pil_open.zmx_connect('build-host', forget=True), 0)
+        run.assert_called_once_with(
+            [sh2pil_open.ssh_binary(), '-S', sh2pil_open.ssh_control_path(),
+             '-O', 'exit', 'build-host'],
+            capture_output=True, timeout=5, env=sh2pil_open.ssh_env())
+        popen.assert_not_called()
+
     def test_zmx_connect_starts_a_persistent_master_when_none_exists(self):
         # The check is one `ssh -O check`; the master itself is started with Popen, because
         # its stderr is relayed line by line while a YubiKey touch is waited for.  Both are

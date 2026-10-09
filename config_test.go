@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -21,9 +22,9 @@ func writeConfig(t *testing.T, body string) {
 	}
 }
 
-// writeConfigOverlay puts one config.d overlay in the home the test is already using, so a
-// case can prove that a later file wins over the main one.
-func writeConfigOverlay(t *testing.T, name, body string) {
+// writeConfigOverlayFile puts one config.d overlay in the home the test is already using, so
+// a case can prove that a later file wins over the main one.
+func writeConfigOverlayFile(t *testing.T, name, body string) {
 	t.Helper()
 	path := filepath.Join(os.Getenv("HOME"), ".config", "sh2pil", "config.d", name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -31,6 +32,31 @@ func writeConfigOverlay(t *testing.T, name, body string) {
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestWriteConfigOverlayPersistsASetting pins the palette's ctrl+s path: the value lands in
+// the local overlay, replaces a line that is already there, keeps the rest, and the chain
+// reads it back.
+func TestWriteConfigOverlayPersistsASetting(t *testing.T) {
+	writeConfig(t, "mode: keybind\n")
+	writeConfigOverlayFile(t, "90-local.yaml", "mode: prompt\n# keep me\n")
+	if err := writeConfigOverlay("mode", "both"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(os.Getenv("HOME"), ".config", "sh2pil", "config.d", "90-local.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mode: both") || strings.Count(string(data), "mode:") != 1 {
+		t.Fatalf("overlay = %q, want one mode line with the new value", data)
+	}
+	if !strings.Contains(string(data), "# keep me") {
+		t.Fatalf("overlay = %q, want the existing comment kept", data)
+	}
+	if got := loadConfig().Mode; got != "both" {
+		t.Fatalf("effective mode = %q, want both", got)
 	}
 }
 

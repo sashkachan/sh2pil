@@ -1816,7 +1816,7 @@ func (m *model) modalBox() string {
 		title, hint := "travel", "1-9 opens now · ctrl+n/p moves · enter selects · esc cancels"
 		if m.modal == "palette" {
 			title, hint = "command palette",
-				"1-9 runs now · ctrl+n/p moves · enter runs · esc cancels"
+				"type to filter · ctrl+n/p moves · enter runs · ctrl+s saves · esc clears or closes"
 		}
 		if m.windowMenu {
 			// This menu is the whole dialog: escape closes it instead of stepping back into a
@@ -1824,6 +1824,9 @@ func (m *model) modalBox() string {
 			hint = "1-9 opens now · ctrl+n/p or arrows move · enter selects · esc closes"
 		}
 		lines := m.dialogTitle(title)
+		if m.modal == "palette" {
+			lines = append(lines, dimSty.Render("filter ")+accentSty.Render(m.nameLine(width-8)))
+		}
 		section := ""
 		for index, name := range m.toolChoices {
 			if index < len(m.toolSections) && m.toolSections[index] != section {
@@ -1844,6 +1847,9 @@ func (m *model) modalBox() string {
 				line = "  " + line
 			}
 			lines = append(lines, line)
+		}
+		if m.modal == "palette" && len(m.toolChoices) == 0 {
+			lines = append(lines, "", dimSty.Render(trim("no command matches "+m.name.text, width-4)))
 		}
 		lines = append(lines, "", dimSty.Render(hint))
 		return m.dialogBox(lines, width)

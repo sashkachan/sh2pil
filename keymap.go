@@ -60,6 +60,7 @@ var keyActions = []keyAction{
 	{name: "modal.kill_to_end", context: keyContextModal, chords: []string{"ctrl+k"}},
 	{name: "modal.kill_to_start", context: keyContextModal, chords: []string{"ctrl+u"}},
 	{name: "modal.yank", context: keyContextModal, chords: []string{"ctrl+y"}},
+	{name: "modal.save", context: keyContextModal, chords: []string{"ctrl+s"}},
 
 	// The slash-prefixed search field.
 	{name: "search.accept", context: keyContextSearch, chords: []string{"enter"}},
@@ -81,7 +82,7 @@ var keyActions = []keyAction{
 	// The lists themselves.
 	{name: "list.menu", context: keyContextList, chords: []string{"."},
 		help: "the travel menu: the ways into the selected project or session"},
-	{name: "list.palette", context: keyContextList, chords: []string{"alt+p"},
+	{name: "list.palette", context: keyContextList, chords: []string{"alt+p", "ctrl+k", ":"},
 		help: "the command palette: the commands that are not travel"},
 	{name: "list.prune", context: keyContextList, chords: []string{"alt+d"},
 		help: "delete every session older than an age, after showing the count"},

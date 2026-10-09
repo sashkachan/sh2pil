@@ -83,7 +83,8 @@ ssh_env: TERM=xterm-256color
 # key.list.fork: ctrl+f, alt+o
 # key.list.delete: none
 # key.list.help: f1
-# key.list.palette: alt+p, ctrl+p   # the command palette
+# key.list.palette: alt+p, ctrl+p   # the command palette; the defaults are alt+p, ctrl+k, and :
+#                                    # inside it, typing filters and ctrl+s saves the changed value
 # key.list.prune: alt+d             # delete the sessions older than an age
 #
 # A file under config.d/ overrides this one, in name order, so a machine or a session can change

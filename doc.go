@@ -68,12 +68,21 @@
 // key opens travel: the ways into the project space the row belongs to, which is the chat
 // itself, a shell, the git tool, the file browser, and the editor.  Cmd+. draws that same menu
 // for the window it was opened from, because a window's menu is about getting somewhere in its
-// own directory.  Everything else is a command, and the command palette (alt+p) carries them
-// under a heading per group: the delete interface first, then the session commands, then the
-// view, the target, and the picker itself.  A palette row is a bound action, so it is run the
-// way its own key would run it: the rules about a running session, a row on another host, or a
-// store that cannot be renamed stay in the one place that already knows them.  An action the
-// reader unbound is not offered at all, so the palette never shows a row that would do nothing.
+// own directory.  Everything else is a command, and the command palette (alt+p, ctrl+k, or `:`)
+// carries them under a heading per group: the delete interface first, then the session
+// commands, then the view, the target, and the picker itself.  A palette row is a bound action,
+// so it is run the way its own key would run it: the rules about a running session, a row on
+// another host, or a store that cannot be renamed stay in the one place that already knows
+// them.  An action the reader unbound is not offered at all, so the palette never shows a row
+// that would do nothing.  Typing filters the rows, an earlier name match first; esc clears the
+// filter before it closes the palette.
+//
+// The picker section also carries rows that are not bound actions: the mode, the store, and
+// the placement in force (enter cycles the value for the session), reloading the config chain,
+// opening the configuration in the editor, the version, and a one-line check of the config and
+// the key map.  On a host, a row offers to forget its SSH master.  ctrl+s writes the value of
+// the last value row to ~/.config/sh2pil/config.d/90-local.yaml, so one setting can outlive
+// the run without editing the tracked file.
 //
 // The first command is the delete interface (alt+d): it removes the sessions older than an age.
 // The age is one field -- `1d`, `3h`, `10m`, or a combination such as `1d3h10m` -- and a number
@@ -256,8 +265,9 @@
 //	           ask offers the same pane too (4)
 //	.          travel: the ways into the project space of the row under the cursor, which is what
 //	           Cmd+. opens for a window outside the picker
-//	alt+p      the command palette: the commands that are not travel, the delete interface first,
-//	           each run the way its own key would run it
+//	alt+p      the command palette (also ctrl+k and `:`): the commands that are not travel, the
+//	           delete interface first, each run the way its own key would run it; typing filters
+//	           the rows, and ctrl+s saves the value of a mode, store, or placement row
 //	alt+d      delete the sessions older than an age: ask for the age, show the count, then
 //	           delete (also the palette's first row)
 //	ctrl+r     read the target on screen again, and reconnect when its master is gone

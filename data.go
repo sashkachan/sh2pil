@@ -170,6 +170,13 @@ type connectMsg struct {
 	err   error
 }
 
+// forgetMsg is the end of a "forget the master" command: the master is gone, and the target's
+// cached connection state has to say so without a refresh that would connect again.
+type forgetMsg struct {
+	label string
+	err   error
+}
+
 // targetRefreshTickMsg is the delayed read a target switch schedules.  It carries the target
 // and the generation it was made for, so a tick whose target has already been left behind
 // starts no read: rotating through the tabs starts one, not one per tab.
@@ -602,6 +609,17 @@ func (m model) reconnectMaster(t target) tea.Cmd {
 	command := m.helper("sh2pil-open", "zmx-connect", "--restart", "--no-wait", t.Server)
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return connectMsg{label: label, err: err}
+	})
+}
+
+// forgetMaster ends the host's SSH master and stops there.  The next read or action makes a
+// new one when it needs it, so a reader who wanted the old master gone does not pay for a new
+// touch immediately.
+func (m model) forgetMaster(t target) tea.Cmd {
+	label := t.label()
+	command := m.helper("sh2pil-open", "zmx-connect", "--forget", "--no-wait", t.Server)
+	return tea.ExecProcess(command, func(err error) tea.Msg {
+		return forgetMsg{label: label, err: err}
 	})
 }
 

@@ -26,7 +26,7 @@ Usage:
     sh2pil-open state [--json] [--live-dir DIR]
     sh2pil-open state-remote <ssh-destination> [--json]
     sh2pil-open zmx-list [--json]
-    sh2pil-open zmx-connect <ssh-destination> [--check] [--no-wait]
+    sh2pil-open zmx-connect <ssh-destination> [--check] [--no-wait] [--restart] [--forget]
     sh2pil-open zmx-remote-list <ssh-destination> [--json]
     sh2pil-open zmx-remote-projects <ssh-destination> [--json]
     sh2pil-open zmx-switch <name> [--server SSH-DEST] [--cwd DIR] [--place WHERE] [--emit-cmd]
@@ -902,17 +902,25 @@ def retryable_connect(reason: str) -> bool:
 
 
 def zmx_connect(server: str, check_only: bool = False, wait: bool = True,
-                restart: bool = False) -> int:
+                restart: bool = False, forget: bool = False) -> int:
     """Establish or reuse a persistent SSH master; this may prompt for YubiKey touch.
 
     With check_only, answer only whether a master already exists: exit 0 when it does and 1
     when it does not, and touch nothing else.  The picker asks that question on the normal
     helper path, where a terminal handover would repaint the whole screen for a 50 ms
     question, and runs this verb for real only when the answer is no.
+
+    With forget, end the master and stop: the next read or action makes a new one when it
+    needs it, and a reader who asked to forget does not want a touch now.
     """
     if not valid_ssh_destination(server):
         return fail('sh2pil-open: server must be an SSH config alias or user@host', wait)
     control = ssh_control_path()
+    if forget:
+        # A failing exit is not an error: there may be no master to end.
+        subprocess.run([ssh_binary(), '-S', control, '-O', 'exit', server],
+                       capture_output=True, timeout=5, env=ssh_env())
+        return 0
     try:
         check = subprocess.run([ssh_binary(), '-S', control, '-O', 'check', server],
                                capture_output=True, timeout=5, env=ssh_env())
@@ -3163,6 +3171,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                                 help='report whether a master exists; exit 1 when it does not')
     zmx_connecting.add_argument('--restart', action='store_true',
                                 help='end an existing master, then establish a new one')
+    zmx_connecting.add_argument('--forget', action='store_true',
+                                help='end an existing master and stop; the next read makes a new one')
     zmx_connecting.add_argument('--no-wait', action='store_true',
                                 help='do not wait for a keypress when the connect fails')
 
@@ -3434,7 +3444,8 @@ def main(argv: list[str]) -> int:
         return focus_session(args.session, args.emit_cmd, args.target)
 
     if args.action == 'zmx-connect':
-        return zmx_connect(args.server, args.check, not args.no_wait, args.restart)
+        return zmx_connect(args.server, args.check, not args.no_wait, args.restart,
+                           args.forget)
 
     if args.action == 'zmx-remote-list':
         try:

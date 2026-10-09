@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,6 +76,8 @@ type model struct {
 	toolChoices     []string                     // the menu's actions: travel, or the command palette
 	toolSections    []string                     // the section heading of each menu row, or "" for none
 	toolPos         int                          // the highlighted menu row
+	paletteAll      []paletteEntry               // every palette row, before the filter narrows it
+	paletteChanged  string                       // key=value of the last value row, for ctrl+s
 	agentChoices    []string                     // the store menu a new chat from a window asks
 	agentPos        int                          // the highlighted store row
 	harness         string                       // the store a new chat uses
@@ -253,21 +256,7 @@ func main() {
 	if *harness != "" {
 		chosenHarness = knownHarness(*harness)
 	}
-	overrides := map[string]string{}
-	for action, value := range settings.Keys {
-		overrides[action] = value
-	}
-	for action, value := range settings.Triggers {
-		// A prompt trigger moves one action into the menu and releases its key.  The primary
-		// action is the exception: its prompt trigger opens the menu, so its key must stay
-		// routed to the dispatch.
-		if value != "prompt" || action == "list.resume" {
-			continue
-		}
-		if _, set := overrides[action]; !set {
-			overrides[action] = "none"
-		}
-	}
+	overrides := keyOverrides(settings)
 	harnesses := settings.Harnesses
 	if *menu {
 		if *menuCWD == "" || !filepath.IsAbs(*menuCWD) {
@@ -439,6 +428,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.loadTarget(m.currentTarget())
+	case forgetMsg:
+		if msg.err != nil {
+			m.status = "could not forget the master on " + msg.label + ": " +
+				firstLine(msg.err.Error())
+			return m, nil
+		}
+		m.markDisconnected(msg.label)
+		if msg.label == m.targetLabel() {
+			m.status = "forgot the SSH master on " + msg.label + "; the next read makes a new one"
+		}
+		return m, nil
 	case targetMsg:
 		m.mergeTarget(msg)
 		return m, m.refreshPreview()
@@ -714,6 +714,14 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case "esc", "ctrl+c", "ctrl+g":
+			if m.modal == "palette" && m.name.text != "" {
+				// esc clears the filter first, so one press does not lose the query and the
+				// palette together; the next press closes it.
+				m.name = field{}
+				m.refilterPalette()
+				m.status = ""
+				return m, nil
+			}
 			kind := m.modal
 			m.modal, m.name, m.toolChoices, m.toolSections = "", field{}, nil, nil
 			m.agentChoices = nil
@@ -815,6 +823,15 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// retitles the tab.  Deleting is the destructive one and keeps its question.
 			return m, m.runPib("renamed to "+trim(name, 40), "rename", session.ID, name)
 		// Emacs editing, inside the field only: the list keeps its own keys.
+		case "ctrl+s":
+			if m.modal == "palette" && m.paletteChanged != "" {
+				key, value, _ := strings.Cut(m.paletteChanged, "=")
+				if err := writeConfigOverlay(key, value); err != nil {
+					m.status = "could not save " + key + ": " + err.Error()
+				} else {
+					m.status = "saved " + key + "=" + value + " to config.d/90-local.yaml"
+				}
+			}
 		case "backspace", "ctrl+h":
 			m.name.backspace()
 		case "delete", "ctrl+d":
@@ -847,6 +864,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(msg.Runes) > 0 && !msg.Alt {
 				m.name.insert(string(msg.Runes))
 			}
+		}
+		if m.modal == "palette" {
+			// Every edit above changes the filter, so the visible rows follow it.
+			m.refilterPalette()
 		}
 		return m, nil
 	}
@@ -1711,6 +1732,28 @@ func travelChoicesFor(s session) []string {
 	}
 }
 
+// keyOverrides turns the reader's key settings and prompt triggers into the override map the
+// keymap resolver takes.  Startup and a palette reload build it the same way, so both give
+// the same keyboard.
+func keyOverrides(settings Config) map[string]string {
+	overrides := map[string]string{}
+	for action, value := range settings.Keys {
+		overrides[action] = value
+	}
+	for action, value := range settings.Triggers {
+		// A prompt trigger moves one action into the menu and releases its key.  The primary
+		// action is the exception: its prompt trigger opens the menu, so its key must stay
+		// routed to the dispatch.
+		if value != "prompt" || action == "list.resume" {
+			continue
+		}
+		if _, set := overrides[action]; !set {
+			overrides[action] = "none"
+		}
+	}
+	return overrides
+}
+
 // paletteSections is the command palette, in the order it is read: the heading, then the
 // bound actions under it.  The delete interface comes first, because a reader who opened the
 // palette to clean up should not have to walk past the other commands to find it.
@@ -1725,21 +1768,159 @@ var paletteSections = []struct {
 	{"picker", []string{"list.help", "list.quit"}},
 }
 
-// paletteEntriesFor is the command palette for one row: the bound actions that are not
-// travel, each under the heading of its section.  An action the reader unbound contributes
-// no row, so the palette never offers something that would do nothing.
-func (m *model) paletteEntriesFor(s session) ([]string, []string) {
-	var actions, sections []string
+// paletteEntry is one palette row before the filter narrows the list: a bound action, or a
+// meta row that has no key of its own.
+type paletteEntry struct {
+	name    string
+	section string
+}
+
+// The meta rows.  A meta row is not a bound action: it changes a setting, runs a one-off
+// command, or reports something, and the palette is the only place it is reached from.  They
+// carry the same section vocabulary as the bound actions.
+const (
+	paletteMetaForget  = "meta.forget_master"
+	paletteMetaMode    = "meta.mode"
+	paletteMetaStore   = "meta.store"
+	paletteMetaPlace   = "meta.placement"
+	paletteMetaReload  = "meta.reload_config"
+	paletteMetaOpen    = "meta.open_config"
+	paletteMetaVersion = "meta.version"
+	paletteMetaDoctor  = "meta.doctor"
+)
+
+// isPaletteMeta reports whether a row is a meta row rather than a bound action.
+func isPaletteMeta(name string) bool {
+	return strings.HasPrefix(name, "meta.")
+}
+
+// paletteEntriesFor is the command palette: the bound actions that are not travel, each under
+// the heading of its section, then the meta rows.  An action the reader unbound contributes
+// no row, so the palette never offers something that would do nothing.  A row for the SSH
+// master is offered only when the target on screen is a host; this machine has none.
+func (m *model) paletteEntriesFor(s session) []paletteEntry {
+	var entries []paletteEntry
 	for _, group := range paletteSections {
 		for _, action := range group.actions {
 			if len(m.chordsOf(action)) == 0 {
 				continue
 			}
-			actions = append(actions, action)
-			sections = append(sections, group.section)
+			entries = append(entries, paletteEntry{name: action, section: group.section})
+		}
+		if group.section == "target" && !m.currentTarget().local() {
+			// The master row sits with the other target commands: this machine has no
+			// master to forget, so it is left out there.
+			entries = append(entries, paletteEntry{name: paletteMetaForget, section: "target"})
 		}
 	}
-	return actions, sections
+	entries = append(entries,
+		paletteEntry{name: paletteMetaMode, section: "picker"},
+		paletteEntry{name: paletteMetaStore, section: "picker"},
+		paletteEntry{name: paletteMetaPlace, section: "picker"},
+		paletteEntry{name: paletteMetaReload, section: "picker"},
+		paletteEntry{name: paletteMetaOpen, section: "picker"},
+		paletteEntry{name: paletteMetaVersion, section: "picker"},
+		paletteEntry{name: paletteMetaDoctor, section: "picker"},
+	)
+	return entries
+}
+
+// refilterPalette rebuilds the visible rows from the full list and the field's text.  The
+// ranking is deliberately small: an earlier substring beats a later one, and any substring
+// beats a subsequence, so a reader who types the start of a name sees it first.
+func (m *model) refilterPalette() {
+	query := strings.TrimSpace(m.name.text)
+	type ranked struct {
+		entry paletteEntry
+		rank  int
+	}
+	var matched []ranked
+	for _, entry := range m.paletteAll {
+		rank, ok := paletteMatch(query, m.paletteRowText(entry))
+		if !ok {
+			continue
+		}
+		matched = append(matched, ranked{entry: entry, rank: rank})
+	}
+	sort.SliceStable(matched, func(i, j int) bool { return matched[i].rank < matched[j].rank })
+	m.toolChoices, m.toolSections = nil, nil
+	for _, row := range matched {
+		m.toolChoices = append(m.toolChoices, row.entry.name)
+		m.toolSections = append(m.toolSections, row.entry.section)
+	}
+	if m.toolPos >= len(m.toolChoices) {
+		m.toolPos = 0
+	}
+}
+
+// paletteRowText is what a filter query is matched against: the internal name, the label the
+// reader sees, and the help text behind it.
+func (m *model) paletteRowText(entry paletteEntry) string {
+	if isPaletteMeta(entry.name) {
+		return entry.name + " " + m.paletteMetaLabel(entry.name)
+	}
+	help := ""
+	if action, known := keyActionByName(entry.name); known {
+		help = action.help
+	}
+	return entry.name + " " + m.paletteLabel(entry.name, m.askSession) + " " + help
+}
+
+// paletteMatch scores one query against one row: a lower rank is a better match.  An empty
+// query matches everything.
+func paletteMatch(query, text string) (int, bool) {
+	q := []rune(strings.ToLower(query))
+	t := []rune(strings.ToLower(text))
+	if len(q) == 0 {
+		return 0, true
+	}
+	for start := 0; start+len(q) <= len(t); start++ {
+		found := true
+		for index := range q {
+			if t[start+index] != q[index] {
+				found = false
+				break
+			}
+		}
+		if found {
+			return start, true
+		}
+	}
+	// No substring: fall back to a subsequence, which is what makes the filter fuzzy.
+	at := 0
+	for index, r := range t {
+		if r == q[at] {
+			at++
+			if at == len(q) {
+				return len(t) + index, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// paletteMetaLabel is the row text of one meta row, with the value in force where the row
+// changes one.
+func (m *model) paletteMetaLabel(name string) string {
+	switch name {
+	case paletteMetaForget:
+		return "forget the SSH master on " + m.targetLabel()
+	case paletteMetaMode:
+		return "mode · " + m.mode
+	case paletteMetaStore:
+		return "store for a new chat · " + harnessTitle(m.harness)
+	case paletteMetaPlace:
+		return "placement · " + describeLayout(m.layout)
+	case paletteMetaReload:
+		return "reload the configuration"
+	case paletteMetaOpen:
+		return "open the configuration in the editor"
+	case paletteMetaVersion:
+		return "version"
+	case paletteMetaDoctor:
+		return "configuration and key check"
+	}
+	return name
 }
 
 // chordsOf is the chords in force for one action: none when the reader unbound it, and none
@@ -1795,6 +1976,9 @@ func (m *model) paletteLabel(action string, s session) string {
 // the palette names the command for the row it was opened on.
 func (m *model) menuRowLabel(action string) string {
 	if m.modal == "palette" {
+		if isPaletteMeta(action) {
+			return m.paletteMetaLabel(action)
+		}
 		return m.paletteLabel(action, m.askSession)
 	}
 	return m.toolLabel(action)
@@ -1813,30 +1997,42 @@ func (m *model) chooseMenu(index int) (tea.Model, tea.Cmd) {
 	return m.chooseTool(index)
 }
 
-// openPalette opens the command palette for the selected row.
+// openPalette opens the command palette for the selected row.  The full row list is kept so
+// the filter can rebuild the visible list on every keystroke; the field starts empty.
 func (m *model) openPalette() (tea.Model, tea.Cmd) {
 	selected := m.selected()
-	actions, sections := m.paletteEntriesFor(selected)
-	if len(actions) == 0 {
+	m.paletteAll = m.paletteEntriesFor(selected)
+	if len(m.paletteAll) == 0 {
 		m.status = "the command palette is empty: every command is unbound"
 		return m, nil
 	}
 	m.askSession = selected
-	m.toolChoices, m.toolSections = actions, sections
+	m.name, m.paletteChanged = field{}, ""
+	m.refilterPalette()
 	m.toolPos, m.modal, m.status = 0, "palette", ""
 	return m, nil
 }
 
-// choosePalette runs one palette command.  A command is a bound action, so the row is run
-// the same way its key would run it: the action's canonical chord goes back through the
-// dispatch, and the rules about a running session, a remote row, or a row that cannot be
-// renamed stay in the one place that already knows them.
+// closePalette puts the palette away.  A row that leaves it runs its command; a value row
+// stays, because its label is how the new value is read and ctrl+s persists it.
+func (m *model) closePalette() {
+	m.modal, m.toolChoices, m.toolSections, m.toolPos = "", nil, nil, 0
+	m.paletteAll, m.paletteChanged = nil, ""
+}
+
+// choosePalette runs one palette row.  A bound action is run the same way its key would run
+// it: the action's canonical chord goes back through the dispatch, and the rules about a
+// running session, a remote row, or a row that cannot be renamed stay in the one place that
+// already knows them.  A meta row runs here instead.
 func (m *model) choosePalette(index int) (tea.Model, tea.Cmd) {
 	if index < 0 || index >= len(m.toolChoices) {
 		return m, nil
 	}
 	name := m.toolChoices[index]
-	m.modal, m.toolChoices, m.toolSections, m.toolPos = "", nil, nil, 0
+	if isPaletteMeta(name) {
+		return m.runPaletteMeta(name)
+	}
+	m.closePalette()
 	chords := m.chordsOf(name)
 	if len(chords) == 0 {
 		m.status = "that command has no key bound; set key." + name + " to run it"
@@ -1848,6 +2044,118 @@ func (m *model) choosePalette(index int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.handleKey(msg)
+}
+
+// runPaletteMeta runs one meta row.  The value rows (mode, store, placement) cycle in place
+// and keep the palette open; the rest close it and run their command.
+func (m *model) runPaletteMeta(name string) (tea.Model, tea.Cmd) {
+	switch name {
+	case paletteMetaMode:
+		m.mode = nextMode(m.mode)
+		m.paletteChanged = "mode=" + m.mode
+		m.status = "mode: " + m.mode + " · ctrl+s saves it"
+		m.refilterPalette()
+		return m, nil
+	case paletteMetaStore:
+		m.harness = cycleHarness(m.harness, m.availableHarnesses())
+		writeHarness(m.harness)
+		m.status = "a new chat uses " + harnessTitle(m.harness)
+		m.refilterPalette()
+		return m, nil
+	case paletteMetaPlace:
+		m.layout = cycleLayout(m.layout)
+		writeLayout(m.layout)
+		m.status = "new terminals go to " + describeLayout(m.layout)
+		m.refilterPalette()
+		return m, nil
+	case paletteMetaVersion:
+		m.closePalette()
+		m.status = "sh2pil " + version
+		return m, nil
+	case paletteMetaDoctor:
+		m.closePalette()
+		m.status = m.doctorLine()
+		return m, nil
+	case paletteMetaReload:
+		m.closePalette()
+		m.status = m.reloadConfig()
+		return m, nil
+	case paletteMetaOpen:
+		m.closePalette()
+		return m, m.openConfig()
+	case paletteMetaForget:
+		m.closePalette()
+		if m.currentTarget().local() {
+			m.status = "this machine has no SSH master to forget"
+			return m, nil
+		}
+		return m, m.forgetMaster(m.currentTarget())
+	}
+	return m, nil
+}
+
+// nextMode is the cycle the mode row walks: keybind, prompt, both, and back.
+func nextMode(value string) string {
+	switch value {
+	case "keybind":
+		return "prompt"
+	case "prompt":
+		return "both"
+	}
+	return "keybind"
+}
+
+// reloadConfig re-reads the config chain and puts the settings the model holds, and the
+// keymap, into force.  It is the palette row's whole job, so it reports what it read.
+func (m *model) reloadConfig() string {
+	settings := loadConfig()
+	m.mode = settings.Mode
+	m.triggers = settings.Triggers
+	m.editor, m.fileBrowser, m.gitTool = settings.Editor, settings.FileBrowser, settings.GitTool
+	m.toolHosts = settings.ToolHosts
+	m.attentionSort, m.notify, m.statePoll = settings.AttentionSort, settings.Notify, settings.StatePoll
+	m.harnesses = settings.Harnesses
+	m.keymap = buildKeymap(keyOverrides(settings))
+	note := "configuration reloaded"
+	if len(settings.Sources) == 0 {
+		note += "; no file found, the defaults are in force"
+	} else {
+		note += " from " + strings.Join(settings.Sources, ", ")
+	}
+	if len(settings.Warnings) > 0 {
+		note += fmt.Sprintf(" (%d warning(s))", len(settings.Warnings))
+	}
+	if len(m.keymap.conflicts) > 0 {
+		note += fmt.Sprintf(" (%d key conflict(s))", len(m.keymap.conflicts))
+	}
+	return note
+}
+
+// doctorLine reports the one-line check: the build, the config chain, and the key map.
+func (m *model) doctorLine() string {
+	settings := loadConfig()
+	conflicts := 0
+	if m.keymap != nil {
+		conflicts = len(m.keymap.conflicts)
+	}
+	return fmt.Sprintf("sh2pil %s · %d config source(s) · %d warning(s) · %d key conflict(s)",
+		version, len(settings.Sources), len(settings.Warnings), conflicts)
+}
+
+// openConfig opens the configuration's directory in the reader's editor, so the picker's
+// settings are one palette row away.
+func (m *model) openConfig() tea.Cmd {
+	path := configFile()
+	if path == "" {
+		m.status = "no configuration path is known"
+		return nil
+	}
+	args, note := m.runToolArgs(m.editor, "nvim", filepath.Dir(path), m.layout)
+	if args == nil {
+		m.status = note
+		return nil
+	}
+	return m.runHelper("sh2pil-open", note, args...)
 }
 
 // startPrune opens the age field of the delete-old-sessions command.  It acts on the target on
