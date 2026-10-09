@@ -305,6 +305,56 @@ class LiveStatesTest(unittest.TestCase):
         self.assertEqual(got[0]['age'], 30)
 
 
+class LegacyLiveDirectoryTest(unittest.TestCase):
+    """Read the records under both names for one release.
+
+    The live directory moved with the pib-live extension, and a machine may still run an
+    extension that writes the old name, so the read looks there too until the extension and
+    the helper have both been updated everywhere.
+    """
+
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.current = pathlib.Path(self.tmp.name) / 'current'
+        self.current.mkdir()
+        self.legacy = pathlib.Path(self.tmp.name) / 'legacy'
+        self.legacy.mkdir()
+
+    def record(self, root: pathlib.Path, pid: int, state: str):
+        (root / f'{pid}.json').write_text(json.dumps({
+            'pid': pid, 'started': 'x', 'state': state, 'at': self.NOW,
+            'file': f'/store/project/2026-01-01_{pid}.jsonl'}))
+
+    def test_a_record_under_the_old_name_is_read(self):
+        self.record(self.legacy, 42, 'blocked')
+        with (patch.object(sh2pil_open, 'LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'SHIPPED_LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'LEGACY_LIVE_DIR', self.legacy)):
+            got = sh2pil_open.live_states(now=self.NOW)
+        self.assertEqual([e['id'] for e in got], ['42'])
+        self.assertEqual(got[0]['state'], 'blocked')
+
+    def test_a_record_under_both_names_is_read_from_the_current_one(self):
+        self.record(self.legacy, 42, 'blocked')
+        self.record(self.current, 42, 'idle')
+        with (patch.object(sh2pil_open, 'LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'SHIPPED_LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'LEGACY_LIVE_DIR', self.legacy)):
+            got = sh2pil_open.live_states(now=self.NOW)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]['state'], 'idle')
+
+    def test_a_named_directory_reads_that_directory_alone(self):
+        self.record(self.legacy, 42, 'blocked')
+        with (patch.object(sh2pil_open, 'LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'SHIPPED_LIVE_DIR', self.current),
+              patch.object(sh2pil_open, 'LEGACY_LIVE_DIR', self.legacy)):
+            self.assertEqual(sh2pil_open.live_states(self.current, self.NOW), [])
+
+
 class ZmxSessionsTest(unittest.TestCase):
     """The zmx flag, its naming rules, and the window lookup that replaces ancestry."""
 
@@ -578,18 +628,18 @@ class ZmxSessionsTest(unittest.TestCase):
         with patch.object(sh2pil_open, 'zmx_free_name', side_effect=lambda base: base):
             argv = sh2pil_open.zmx_attach_argv(['pi', '--session', identifier], str(self.project),
                                             identifier, '/bin/zmx')
-        self.assertEqual(argv[:6], ['env', '-u', 'ZMX_SESSION', 'PIB_ZMX=/bin/zmx',
-                                    '/bin/zmx', 'attach'])
-        self.assertEqual(argv[6], '--labels')
-        self.assertEqual(argv[7], f'project=home-infra pi={identifier}')
-        self.assertEqual(argv[8], 'pi-01a10240')
-        self.assertEqual(argv[9:], ['pi', '--session', identifier])
+        self.assertEqual(argv[:7], ['env', '-u', 'ZMX_SESSION', 'SH2PIL_ZMX=/bin/zmx',
+                                    'PIB_ZMX=/bin/zmx', '/bin/zmx', 'attach'])
+        self.assertEqual(argv[7], '--labels')
+        self.assertEqual(argv[8], f'project=home-infra pi={identifier}')
+        self.assertEqual(argv[9], 'pi-01a10240')
+        self.assertEqual(argv[10:], ['pi', '--session', identifier])
 
     def test_a_new_chat_is_named_after_the_project_and_labelled_without_an_id(self):
         with patch.object(sh2pil_open, 'zmx_free_name', side_effect=lambda base: base):
             argv = sh2pil_open.zmx_attach_argv(['pi'], str(self.project), '', '/bin/zmx')
-        self.assertEqual(argv[7], 'project=home-infra')
-        self.assertEqual(argv[8], 'pi-home-infra')
+        self.assertEqual(argv[8], 'project=home-infra')
+        self.assertEqual(argv[9], 'pi-home-infra')
 
     def test_only_chat_actions_are_wrapped(self):
         opened = []
@@ -715,8 +765,8 @@ class ZmxSessionsTest(unittest.TestCase):
                            side_effect=lambda argv, cwd, label, place, emit:
                            opened.append((argv, label)) or 0)):
             sh2pil_open.open_terminal('attach', argparse.Namespace(**fields))
-        self.assertEqual(opened[0][0], ['env', '-u', 'ZMX_SESSION', 'PIB_ZMX=/bin/zmx',
-                                        '/bin/zmx', 'attach', 'pi-abc'])
+        self.assertEqual(opened[0][0], ['env', '-u', 'ZMX_SESSION', 'SH2PIL_ZMX=/bin/zmx',
+                                        'PIB_ZMX=/bin/zmx', '/bin/zmx', 'attach', 'pi-abc'])
         self.assertEqual(opened[0][1], '')
 
     def test_zmx_client_honors_every_requested_placement(self):
@@ -1927,8 +1977,8 @@ class ZmxPickerTest(unittest.TestCase):
                            side_effect=lambda argv, cwd, label, place, emit:
                            opened.append((argv, cwd, label, place)) or 0)):
             sh2pil_open.zmx_switch('pi-aaa', str(self.project), 'window')
-        self.assertEqual(opened[0], (['env', '-u', 'ZMX_SESSION', 'PIB_ZMX=/bin/zmx',
-                                      '/bin/zmx', 'attach', 'pi-aaa'],
+        self.assertEqual(opened[0], (['env', '-u', 'ZMX_SESSION', 'SH2PIL_ZMX=/bin/zmx',
+                                      'PIB_ZMX=/bin/zmx', '/bin/zmx', 'attach', 'pi-aaa'],
                                      str(self.project), '', 'window'))
 
     def test_switch_opens_the_client_in_the_requested_pane(self):

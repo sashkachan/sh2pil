@@ -297,14 +297,19 @@ SESSION_HARNESSES = ('pi', 'opencode', 'claude', 'codex')
 # is gone as soon as the picker draws again, and the terminal this helper opens closes at
 # once when the tool inside it cannot start.  The log keeps the cause after both are gone.
 # A paste from a key binding is written here too: that child has no screen at all.
-#
-# The directory keeps the name an earlier release used, and so does LIVE_DIR below: the
-# pib-live Pi extension, which lives in the dotfiles and writes the live records, points at
-# it.  Rename them together with that extension, not before it.
-LOG = pathlib.Path.home() / '.local/state/pib-open/errors.log'
+LOG = pathlib.Path.home() / '.local/state/sh2pil/errors.log'
 
 SESSIONS_DIR = pathlib.Path.home() / '.pi/agent/sessions'
-LIVE_DIR = pathlib.Path.home() / '.local/state/pib-open/live'
+
+# The directory the pib-live Pi extension writes its live records into.  An earlier release
+# used ~/.local/state/pib-open/live, and a machine may still run that extension or an older
+# helper, so the old directory is read as a fallback for one release: a record found under
+# both names is read from the current one.  The extension writes the current name.
+LIVE_DIR = pathlib.Path.home() / '.local/state/sh2pil/live'
+LEGACY_LIVE_DIR = pathlib.Path.home() / '.local/state/pib-open/live'
+# What LIVE_DIR is before a caller or a test patches it: only the shipped value has a legacy
+# directory to fall back to.
+SHIPPED_LIVE_DIR = LIVE_DIR
 
 # The state the pib-live Pi extension publishes beside the transcript, so that a reader can
 # say what a chat is doing and not merely that it exists.  A record is a status label: a
@@ -861,7 +866,7 @@ def ssh_control_path() -> str:
     same socket so a regular ssh command to one of those hosts reuses this master instead of
     asking for another YubiKey touch.  Rename the two together, or the sharing stops.
     """
-    return str(pathlib.Path.home() / '.ssh' / 'pib-sk-%C')
+    return str(pathlib.Path.home() / '.ssh' / 'sh2pil-sk-%C')
 
 
 # How many times a connect is tried before the reader is told it failed.  ~/.ssh/config
@@ -1967,8 +1972,8 @@ def paste_window(identifier: str) -> int:
 
 # ZMX_ATTACH finds the session a window holds a client for.  A local client runs `zmx attach
 # <name>`; a remote one runs an ssh whose command string carries the same words, so one read
-# covers both, and the lookbehind keeps an env pair such as PIB_ZMX=/usr/bin/zmx from matching
-# on its own.
+# covers both, and the lookbehind keeps an env pair such as SH2PIL_ZMX=/usr/bin/zmx from
+# matching on its own.
 ZMX_ATTACH = re.compile(r'(?<![\w.-])zmx\s+attach\s+([A-Za-z0-9._-]+)')
 
 
@@ -2614,6 +2619,26 @@ def live_state_column(entry: dict) -> str:
     return 'stale' if entry.get('stale') else '-'
 
 
+def live_record_files(directory: pathlib.Path | None = None):
+    """Yield the live record files to read, the current directory first.
+
+    A caller that names a directory gets exactly that one, which is what a test and
+    `--live-dir` mean.  Without one, the current directory is read and the directory an
+    earlier release used is read after it for one release; a record that exists under both
+    names is read once, from the current one.
+    """
+    if directory is not None:
+        yield from sorted(directory.glob('*.json'))
+        return
+    roots = [LIVE_DIR, LEGACY_LIVE_DIR] if LIVE_DIR == SHIPPED_LIVE_DIR else [LIVE_DIR]
+    seen: set[str] = set()
+    for root in roots:
+        for path in sorted(root.glob('*.json')):
+            if path.name not in seen:
+                seen.add(path.name)
+                yield path
+
+
 def live_states(directory: pathlib.Path | None = None, now: float | None = None) -> list[dict]:
     """Return what every registered chat is doing, and nothing else about it.
 
@@ -2623,12 +2648,10 @@ def live_states(directory: pathlib.Path | None = None, now: float | None = None)
     and the transcript reads that `live` does.  A record is not validated here: the caller keeps
     this beside the answer `live` gave, and that is the read which checks the process.
     """
-    if directory is None:
-        directory = LIVE_DIR
     if now is None:
         now = time.time()
     found = []
-    for path in directory.glob('*.json'):
+    for path in live_record_files(directory):
         try:
             record = json.loads(path.read_text(encoding='utf-8'))
             file = record['file']
@@ -2658,11 +2681,9 @@ def process_start(pid: int) -> str:
 
 def registered_processes(directory: pathlib.Path | None = None) -> list[dict]:
     """Only trust records for Pi processes with the same PID and start time."""
-    if directory is None:
-        directory = LIVE_DIR
     running = {pid for pid, _, _ in pi_processes()}
     records = []
-    for path in directory.glob('*.json'):
+    for path in live_record_files(directory):
         try:
             entry = json.loads(path.read_text(encoding='utf-8'))
             pid = entry['pid']
@@ -2900,7 +2921,8 @@ def zmx_client_argv(name: str, binary: str) -> list[str]:
     terminal instead of opening a client.  The session replays its own window title, so no
     title is set here: the chat keeps the name it was given.
     """
-    return ['env', '-u', 'ZMX_SESSION', f'PIB_ZMX={binary}', binary, 'attach', name]
+    return ['env', '-u', 'ZMX_SESSION', f'SH2PIL_ZMX={binary}', f'PIB_ZMX={binary}',
+            binary, 'attach', name]
 
 
 def zmx_client_place(place: str) -> str:
@@ -2919,8 +2941,9 @@ def zmx_attach_argv(argv: list[str], cwd: str, identifier: str, binary: str) -> 
 
     `env -u ZMX_SESSION` matters: a caller that is itself inside a session would otherwise
     make `zmx attach` switch that terminal instead of creating a new client.  The labels are
-    set as the session is created, so a session cannot be left unlabelled, and PIB_ZMX
-    carries the resolved path into the session for the pib-live extension.
+    set as the session is created, so a session cannot be left unlabelled, and SH2PIL_ZMX
+    carries the resolved path into the session for the pib-live extension; PIB_ZMX is set
+    too, for one release, so an extension that still reads the old name finds it.
     """
     project = zmx_token(pathlib.Path(cwd).name, 'project')
     labels = f'project={project}'
@@ -2932,8 +2955,8 @@ def zmx_attach_argv(argv: list[str], cwd: str, identifier: str, binary: str) -> 
         # A new chat generates its own id inside the session, so the project names it here
         # and the pib-live extension adds the id to the label once it exists.
         base = f'pi-{project}'
-    return ['env', '-u', 'ZMX_SESSION', f'PIB_ZMX={binary}', binary, 'attach',
-            '--labels', labels, zmx_free_name(base)] + argv
+    return ['env', '-u', 'ZMX_SESSION', f'SH2PIL_ZMX={binary}', f'PIB_ZMX={binary}',
+            binary, 'attach', '--labels', labels, zmx_free_name(base)] + argv
 
 
 def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int:
@@ -3121,8 +3144,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     states = commands.add_parser('state', help='list what the registered chats are doing')
     states.add_argument('--json', action='store_true', help='write JSON instead of rows')
-    states.add_argument('--live-dir', default=str(LIVE_DIR),
-                        help='record directory (default: %(default)s)')
+    states.add_argument('--live-dir', default='',
+                        help='record directory (default: the current directory, then the '
+                             'one an earlier release used)')
 
     remote_states = commands.add_parser(
         'state-remote', help='ask a host what its own registered chats are doing')
@@ -3396,7 +3420,8 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.action == 'state':
-        entries = live_states(pathlib.Path(args.live_dir).expanduser())
+        directory = pathlib.Path(args.live_dir).expanduser() if args.live_dir else None
+        entries = live_states(directory)
         if args.json:
             json.dump(entries, sys.stdout, indent=2)
             sys.stdout.write('\n')

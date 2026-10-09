@@ -101,9 +101,11 @@ and each of those is optional — a missing one is reported, not fatal.
 
 The `● needs you`, `● bash`, and `● idle` marks come from records written by a Pi extension
 that is **not** shipped here — it belongs to the dotfiles setup this tool grew out of. The
-extension writes one file per running chat into `~/.local/state/pib-open/live`, which the
-helper reads. Without it nothing breaks: a row simply says `live`, which is what every row said
-before the state existed.
+extension writes one file per running chat into `~/.local/state/sh2pil/live`, which the
+helper reads. For one release the directory an earlier release used,
+`~/.local/state/pib-open/live`, is read too, so an extension that has not been updated yet
+keeps working. Without the extension nothing breaks: a row simply says `live`, which is what
+every row said before the state existed.
 
 Write records with a `state`, a tool *name*, a dialog kind, and the dialog's short label — a
 status, never content. See `sh2pil-open state --json` for the shape it reads.
@@ -186,14 +188,13 @@ dotfiles keeps working while it is migrated.
 
 ## Compatibility with the dotfiles
 
-`sh2pil` reads and writes three things that the dotfiles also use. Their names are older than
-this repository and are kept unchanged:
+`sh2pil` reads and writes three things that the dotfiles also use. Their current names are:
 
 | Name | Shared with |
 |---|---|
-| `PIB_ZMX` | the `pib-live` Pi extension, which reads it to find the zmx binary |
-| `~/.local/state/pib-open/live` | the same extension, which writes the live session records there |
-| `~/.ssh/pib-sk-%C` | `~/.ssh/config.d/remote-zmx.conf`, which shares the master socket |
+| `SH2PIL_ZMX` | the `pib-live` Pi extension and the zmx session itself: the helper sets it to the resolved zmx binary, and the extension reads it. For one release the helper also sets `PIB_ZMX`, and the updated extension reads `SH2PIL_ZMX` first and `PIB_ZMX` after it. |
+| `~/.local/state/sh2pil/live` | the same extension, which writes the live session records there. The old `~/.local/state/pib-open/live` is read as a fallback for one release. |
+| `~/.ssh/sh2pil-sk-%C` | `~/.ssh/config.d/remote-zmx.conf`, which shares the master socket. Rename the two together, or the sharing stops. |
 
 A remote host may still carry the older helper names. `sh2pil-open` tries the current name
 first and falls back to `pib`, `pib-open`, and `pi-last`, so an unmigrated host answers instead

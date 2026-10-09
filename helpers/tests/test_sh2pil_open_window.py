@@ -39,6 +39,12 @@ class ZmxNameTest(unittest.TestCase):
                        '/opt/homebrew/bin/zmx', 'attach', 'pi-abc-1']])
         self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-abc-1')
 
+    def test_a_new_release_client_names_its_session_too(self):
+        row = window([['env', '-u', 'ZMX_SESSION', 'SH2PIL_ZMX=/opt/homebrew/bin/zmx',
+                       'PIB_ZMX=/opt/homebrew/bin/zmx', '/opt/homebrew/bin/zmx',
+                       'attach', 'pi-abc-1']])
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-abc-1')
+
     def test_a_remote_client_names_its_session_from_the_ssh_command(self):
         row = ssh_window('host', 'env -u ZMX_SESSION PIB_ZMX=/usr/bin/zmx zmx attach feat-2')
         self.assertEqual(sh2pil_open.window_zmx_name(row), 'feat-2')
