@@ -1345,3 +1345,67 @@ func TestScopedTermsRestrictTheField(t *testing.T) {
 		}
 	}
 }
+
+// TestFilterHideFalseKeepsDimHeaders pins the option: every project stays on screen, and one
+// the query did not answer is a dim, folded header instead of a missing row.
+func TestFilterHideFalseKeepsDimHeaders(t *testing.T) {
+	m := model{view: viewSessions, width: 100, height: 20, expanded: map[string]bool{},
+		filterAll: true,
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "repo", CWD: "/tmp/repo", Sessions: []session{{ID: "ses_1", Name: "fix login"}}},
+			{Project: "other", CWD: "/tmp/other", Sessions: []session{{ID: "ses_2", Name: "lint"}}},
+		}}}}
+	m.query = "login"
+	m.rebuildRows()
+	rows := m.filtered()
+	if len(rows) != 3 {
+		t.Fatalf("rows = %#v, want the matching project and the dim header", rows)
+	}
+	if rows[0].Dim || rows[1].Dim || !rows[2].Dim || rows[2].Project != "other" {
+		t.Fatalf("dim flags = %#v, want only the unmatched project dim", rows)
+	}
+	if !strings.Contains(m.projectsView(), "other") {
+		t.Fatal("the dim header is not drawn")
+	}
+	// With the default, the same model hides it.
+	m.filterAll = false
+	m.rebuildRows()
+	if rows := m.filtered(); len(rows) != 2 {
+		t.Fatalf("rows with filter_hide = %#v, want the matching project alone", rows)
+	}
+}
+
+// TestFilterKeepRestoresPerTargetQueries pins the option: the query belongs to the target it
+// was typed on, and returning to that target brings it back.
+func TestFilterKeepRestoresPerTargetQueries(t *testing.T) {
+	m := model{view: viewSessions, width: 100, height: 20, filterKeep: true,
+		keptQueries: map[string]string{}, expanded: map[string]bool{},
+		targets: []target{{}, {Server: "build-host"}},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}},
+			"build-host": {Loaded: true, Target: target{Server: "build-host"}}}}
+	m.query = "login"
+	m.showTarget(1)
+	if m.query != "" {
+		t.Fatalf("query after the switch = %q, want the new target's empty query", m.query)
+	}
+	m.query = "api"
+	m.showTarget(0)
+	if m.query != "login" {
+		t.Fatalf("query restored = %q, want login", m.query)
+	}
+}
+
+// TestFilterFieldsRestrictBareTerms pins filter_fields: a bare term reads only the configured
+// fields, while a scoped term still names its own.
+func TestFilterFieldsRestrictBareTerms(t *testing.T) {
+	row := session{ID: "ses_1", Name: "fix login", Project: "api", CWD: "/srv/api"}
+	if ok, _ := matchesRowFields("srv", row, []string{"name"}); ok {
+		t.Fatal("a bare term matched a field outside the configured set")
+	}
+	if ok, _ := matchesRowFields("srv", row, []string{"cwd"}); !ok {
+		t.Fatal("a bare term did not match its configured field")
+	}
+	if ok, _ := matchesRowFields("~srv", row, []string{"name"}); !ok {
+		t.Fatal("a scoped term was dropped with the configured field set")
+	}
+}

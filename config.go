@@ -200,6 +200,10 @@ type Config struct {
 	// host with no entry there keeps its own default, so the picker sends a tool name to
 	// a host only when this map names one for it.
 	ToolHosts map[string]map[string]string
+	// The filter options: how the list search behaves.
+	FilterHide   bool     // hide non-matching groups; false keeps them dim and folded
+	FilterKeep   bool     // remember the last query per target
+	FilterFields []string // the fields a bare filter term searches
 	// Mode and Triggers decide how an action is reached: by its key, from the next-step menu,
 	// or both.  A trigger names one action and overrides the mode for that action.
 	Mode      string
@@ -221,6 +225,7 @@ var knownConfigKeys = map[string]bool{
 	"editor": true, "file_browser": true, "git_tool": true, "shell": true,
 	"mode": true, "ssh_env": true, "state_poll_seconds": true,
 	"attention_sort": true, "notify": true,
+	"filter_hide": true, "filter_keep": true, "filter_fields": true,
 }
 
 // knownConfigPrefixes are the keys a program owns as a family rather than one setting: the
@@ -243,6 +248,8 @@ func loadConfig() Config {
 		Triggers:        map[string]string{},
 		Values:          map[string]string{},
 		ToolHosts:       map[string]map[string]string{},
+		FilterHide:      true,
+		FilterFields:    append([]string{}, searchFields...),
 	}
 	// tools collects the effective global tool in chain order, so the last value wins
 	// whichever form carries it: tools.<key> or a flat <key>.
@@ -316,6 +323,35 @@ func loadConfig() Config {
 		cfg.GitTool = raw
 	}
 	cfg.Shell = strings.TrimSpace(tools["shell"])
+	if raw, ok := cfg.Values["filter_hide"]; ok {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			cfg.FilterHide = parsed
+		} else {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("filter_hide: %q is not true or false; hiding non-matching groups", raw))
+		}
+	}
+	if raw, ok := cfg.Values["filter_keep"]; ok {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			cfg.FilterKeep = parsed
+		} else {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("filter_keep: %q is not true or false; forgetting the query per target", raw))
+		}
+	}
+	if raw, ok := cfg.Values["filter_fields"]; ok {
+		fields, unknown := parseFilterFields(raw)
+		if len(fields) > 0 {
+			cfg.FilterFields = fields
+		} else {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("filter_fields: %q names no known field; searching every field", raw))
+		}
+		for _, name := range unknown {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("filter_fields: %q is not a field; ignored", name))
+		}
+	}
 	if raw := strings.TrimSpace(cfg.Values["mode"]); raw != "" {
 		if knownModes[raw] {
 			cfg.Mode = raw
@@ -466,6 +502,27 @@ func scanConfigFile(path, text string, values, tools map[string]string,
 			hosts[host][name] = raw
 		}
 	}
+}
+
+// parseFilterFields reads the fields a bare filter term searches.  It returns the known names
+// in the configured order and the names that are not fields, so the caller can warn about them.
+func parseFilterFields(value string) ([]string, []string) {
+	var fields, unknown []string
+	for _, name := range splitList(value) {
+		known := false
+		for _, field := range searchFields {
+			if name == field {
+				known = true
+				break
+			}
+		}
+		if known {
+			fields = append(fields, name)
+		} else {
+			unknown = append(unknown, name)
+		}
+	}
+	return fields, unknown
 }
 
 // keyActionByName reports whether the registry knows an action.

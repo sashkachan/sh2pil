@@ -72,6 +72,17 @@ ssh_env: TERM=xterm-256color
 # exactly as zmx_servers spells it.  Example (uncomment to use):
 # ssh_env.user@192.0.2.15: LANG=C.UTF-8
 
+# ---- the list filter ----
+# filter_hide: true hides a project the query did not answer; false keeps every project on
+# screen and shows the ones that did not answer as dim, folded headers.
+# filter_keep: true remembers the last query per target, so a switch to a host and back
+# restores the filter instead of clearing it.
+# filter_fields selects what a bare search term reads.  A scoped term still names its own
+# field: @project, #name, ~path, host:host.
+# filter_hide: true
+# filter_keep: false
+# filter_fields: name, project, cwd, zmx, cmd, server
+
 # ---- keybindings ----
 # Every key the picker acts on is a setting named key.<context>.<action>.  The context is
 # list, search, modal, or confirm.  A comma list gives one action several chords, and none

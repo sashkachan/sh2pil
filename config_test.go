@@ -208,3 +208,20 @@ func TestTargetTableIsStaticallyConfigured(t *testing.T) {
 		t.Fatalf("targets without zmx_servers = %#v, want this machine alone", targets)
 	}
 }
+
+// TestFilterOptions pins the three filter settings and the warning for a field that is not
+// one.
+func TestFilterOptions(t *testing.T) {
+	writeConfig(t, "filter_hide: false\nfilter_keep: true\nfilter_fields: name, srv, cmd\n")
+	cfg := loadConfig()
+	if cfg.FilterHide || !cfg.FilterKeep {
+		t.Fatalf("filter booleans = hide %t, keep %t; want false and true", cfg.FilterHide,
+			cfg.FilterKeep)
+	}
+	if len(cfg.FilterFields) != 2 || cfg.FilterFields[0] != "name" || cfg.FilterFields[1] != "cmd" {
+		t.Fatalf("filter_fields = %#v, want name and cmd", cfg.FilterFields)
+	}
+	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], `"srv"`) {
+		t.Fatalf("warnings = %#v, want one about srv", cfg.Warnings)
+	}
+}

@@ -49,6 +49,9 @@ func printConfiguration(out io.Writer, cfg Config) {
 			fmt.Fprintln(out, "tools.hosts."+host+": "+strings.Join(pairs, ", "))
 		}
 	}
+	fmt.Fprintf(out, "filter_hide: %t\n", cfg.FilterHide)
+	fmt.Fprintf(out, "filter_keep: %t\n", cfg.FilterKeep)
+	fmt.Fprintln(out, "filter_fields: "+strings.Join(cfg.FilterFields, ", "))
 	if len(cfg.Values) == 0 {
 		return
 	}

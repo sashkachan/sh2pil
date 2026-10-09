@@ -132,23 +132,30 @@ type model struct {
 	seen         map[string]string // this machine's chats: chat -> the state the picker last saw it in
 	// A host's chats are remembered apart from this machine's, so one source's pruning can never
 	// drop another's memory or unread mark.  See attention.go.
-	remoteStates     map[string]liveInfo // server+chat -> what that chat is doing
-	remoteSeen       map[string]string   // server+chat -> the state the picker last saw it in
-	remoteKnown      map[string]bool     // server+chat -> every chat that host has named
-	visited          string              // the row the cursor was last on: the mark an unread row clears on
-	showIgnored      bool                // the project pane shows the ignored groups instead of the active ones
-	onlyShown        bool                // the lists keep only the rows a window already shows
-	live             map[string]liveInfo
-	showPrev         bool
-	status           string
-	pending          string // an action waiting for a yes on a live session
-	query            string // the filter, which drives both panes at once
-	searching        bool   // the search field of the active pane is open
-	queryCursor      int
-	cursor           int
-	offset           int
-	zmxCursor        int
-	zmxOffset        int
+	remoteStates map[string]liveInfo // server+chat -> what that chat is doing
+	remoteSeen   map[string]string   // server+chat -> the state the picker last saw it in
+	remoteKnown  map[string]bool     // server+chat -> every chat that host has named
+	visited      string              // the row the cursor was last on: the mark an unread row clears on
+	showIgnored  bool                // the project pane shows the ignored groups instead of the active ones
+	onlyShown    bool                // the lists keep only the rows a window already shows
+	live         map[string]liveInfo
+	showPrev     bool
+	status       string
+	pending      string // an action waiting for a yes on a live session
+	query        string // the filter, which drives both panes at once
+	searching    bool   // the search field of the active pane is open
+	queryCursor  int
+	cursor       int
+	offset       int
+	zmxCursor    int
+	zmxOffset    int
+	// The filter options.  filterAll is the config's filter_hide inverted: the zero value
+	// hides a group the query did not answer, which is the behavior every hand-built model
+	// expects.
+	filterAll        bool
+	filterKeep       bool
+	filterFields     []string
+	keptQueries      map[string]string
 	width            int
 	height           int
 	preview          preview
@@ -270,6 +277,8 @@ func main() {
 		windowMenu: *menu, alwaysAsk: *menu, windowRow: windowMenuRow(*menuCWD, *menuServer),
 		statePoll:     settings.StatePoll,
 		attentionSort: settings.AttentionSort, notify: settings.Notify,
+		filterAll: !settings.FilterHide, filterKeep: settings.FilterKeep,
+		filterFields: settings.FilterFields, keptQueries: map[string]string{},
 		out:      os.Stdout,
 		showPrev: true, layout: readLayout(), keymap: buildKeymap(overrides),
 		live: map[string]liveInfo{}, cache: map[string]preview{},
@@ -2112,6 +2121,8 @@ func (m *model) reloadConfig() string {
 	m.editor, m.fileBrowser, m.gitTool = settings.Editor, settings.FileBrowser, settings.GitTool
 	m.toolHosts = settings.ToolHosts
 	m.attentionSort, m.notify, m.statePoll = settings.AttentionSort, settings.Notify, settings.StatePoll
+	m.filterAll, m.filterKeep = !settings.FilterHide, settings.FilterKeep
+	m.filterFields = settings.FilterFields
 	m.harnesses = settings.Harnesses
 	m.keymap = buildKeymap(keyOverrides(settings))
 	note := "configuration reloaded"

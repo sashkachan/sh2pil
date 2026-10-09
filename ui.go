@@ -223,8 +223,20 @@ func (m *model) switchTargetAt(number int) tea.Cmd {
 // message: a reader who walks the targets starts one read, not one per switch, and the rows of a
 // target that has already answered are on screen before the read even begins.
 func (m *model) showTarget(index int) tea.Cmd {
+	if m.filterKeep {
+		// The query belongs to the target it was typed on: keep it while leaving, and bring
+		// the new target's own query back.
+		if m.keptQueries == nil {
+			m.keptQueries = map[string]string{}
+		}
+		m.keptQueries[m.targetLabel()] = m.query
+	}
 	m.current = index
 	m.generation++
+	if m.filterKeep {
+		m.query = m.keptQueries[m.targetLabel()]
+		m.queryCursor = len([]rune(m.query))
+	}
 	*m.cursorPtr(), *m.offsetPtr() = 0, 0
 	m.rebuildRows()
 	// A pane the new target cannot fill gives the cursor back to the project list.
@@ -416,6 +428,7 @@ func (m *model) rebuildRows() {
 		}
 		projectMatched, matched := m.matchGroup(group)
 		found := matched
+		dimmed := false
 		if projectMatched {
 			// The project itself matched, by name or by path: opening it must never show an
 			// empty box, so it keeps every session it holds.  The fold below still counts
@@ -429,7 +442,13 @@ func (m *model) rebuildRows() {
 			continue
 		}
 		if !projectMatched && len(found) == 0 {
-			continue
+			if !m.filterAll || m.onlyShown || strings.TrimSpace(m.query) == "" {
+				continue
+			}
+			// filter_hide false keeps every project on screen: one the query did not answer
+			// stays as a dim folded header, so the list never hides where the reader is.
+			dimmed = true
+			found = m.visibleSessions(group.Sessions)
 		}
 		// The rows that wait on a person come first inside their group, and the project list is
 		// the only list ranked: a group's own order, and the zmx pane's, are left alone.
@@ -450,6 +469,7 @@ func (m *model) rebuildRows() {
 		}
 		expanded := m.groupExpanded(group, len(matched), len(found))
 		header := groupRow(group, expanded)
+		header.Dim = dimmed
 		// A closed group hides every session under it, and a group starts closed, so the count a
 		// person has to answer belongs on the header too: otherwise the one row worth finding is
 		// only findable by opening every project in turn.
@@ -465,6 +485,7 @@ func (m *model) rebuildRows() {
 		}
 		for _, row := range found {
 			row.Depth = 1
+			row.Dim = dimmed
 			rows = append(rows, row)
 		}
 	}
@@ -488,7 +509,7 @@ func (m *model) rankGroups(groups []group) []group {
 	}
 	ranked := make([]scored, 0, len(groups))
 	for _, g := range groups {
-		ranked = append(ranked, scored{group: g, score: groupMatchScore(m.query, g)})
+		ranked = append(ranked, scored{group: g, score: groupMatchScoreFields(m.query, g, m.searchFieldSet())})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score < ranked[j].score })
 	ordered := make([]group, 0, len(ranked))
@@ -547,6 +568,20 @@ func (m *model) zmxPaneKeepsRows() bool {
 	return false
 }
 
+// searchFieldSet is the fields a bare filter term searches: the configured set, or every field
+// when the model was built without one (a test, or a window that arrives before Init).
+func (m *model) searchFieldSet() []string {
+	if len(m.filterFields) == 0 {
+		return searchFields
+	}
+	return m.filterFields
+}
+
+// matchesRow applies the filter to one row under the configured field set.
+func (m *model) matchesRow(query string, s session) (bool, map[string][]int) {
+	return matchesRowFields(query, s, m.searchFieldSet())
+}
+
 // matchGroup applies the project pane's search to one group: whether the project itself
 // matches, and which of its sessions do.  An empty query keeps everything.
 func (m *model) matchGroup(g group) (bool, []session) {
@@ -556,7 +591,7 @@ func (m *model) matchGroup(g group) (bool, []session) {
 	}
 	found := make([]session, 0, len(g.Sessions))
 	for _, row := range g.Sessions {
-		if ok, _ := matchesRow(query, row); ok {
+		if ok, _ := m.matchesRow(query, row); ok {
 			found = append(found, row)
 		}
 	}
@@ -605,7 +640,7 @@ func (m *model) matchZmx(rows []session) []session {
 	}
 	out := make([]session, 0, len(rows))
 	for _, row := range rows {
-		if ok, _ := matchesRow(query, row); ok {
+		if ok, _ := m.matchesRow(query, row); ok {
 			out = append(out, row)
 		}
 	}
@@ -1409,6 +1444,11 @@ func (m *model) sessionRowView(s session, marks map[string][]int, selected bool,
 		// every cell, so the selected row carries no per-cell colours.
 		return selSty.Render(plain)
 	}
+	if s.Dim {
+		// A project the query did not answer, kept only by filter_hide false: it stays out of
+		// the way until the reader opens it.
+		return dimSty.Render(plain)
+	}
 	styledFlag := flag
 	if live {
 		styledFlag = stateStyle.Render(flag)
@@ -1448,7 +1488,7 @@ func (m *model) projectsView() string {
 	lines := make([]string, 0, height)
 	last := min(len(rows), m.offset+height)
 	for index := m.offset; index < last; index++ {
-		_, marks := matchesRow(m.query, rows[index])
+		_, marks := m.matchesRow(m.query, rows[index])
 		lines = append(lines, m.rowView(rows[index], marks, index == cursor))
 	}
 	return strings.Join(lines, "\n")
@@ -1499,7 +1539,7 @@ func (m *model) zmxView() string {
 	lines := make([]string, 0, max(0, height))
 	last := min(len(rows), m.zmxOffset+height)
 	for index := m.zmxOffset; index < last; index++ {
-		_, marks := matchesRow(m.query, rows[index])
+		_, marks := m.matchesRow(m.query, rows[index])
 		lines = append(lines, m.rowView(rows[index], marks, index == cursor))
 	}
 	return head + "\n" + strings.Join(lines, "\n")

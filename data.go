@@ -42,6 +42,9 @@ type session struct {
 	Count       int // a group header: how many sessions are under it
 	Waiting     int // a group header: how many of them are blocked on a person
 	Ignored     bool
+	// Dim marks a project the query did not answer: filter_hide false keeps it as a dim folded
+	// header so the list never hides where the reader is.
+	Dim bool
 	// A zmx row is one live zmx session.  ID and File are the Pi chat the session carries,
 	// when it carries one; ZmxName is the name zmx knows, and the handle an attach uses.  A
 	// session row that runs inside a zmx session carries that name too, which is how the
@@ -1005,14 +1008,19 @@ func isWordStart(text string, at int) bool {
 // groupMatchScore is how well one group answers a query: the best score of its header and its
 // sessions' rows.  A group with no match at all scores above every match, so it sorts last.
 func groupMatchScore(query string, g group) int {
+	return groupMatchScoreFields(query, g, searchFields)
+}
+
+// groupMatchScoreFields is groupMatchScore over one field set.
+func groupMatchScoreFields(query string, g group, fields []string) int {
 	best := -1
 	for _, s := range g.Sessions {
-		if score := rowMatchScore(query, s); score >= 0 && (best < 0 || score < best) {
+		if score := rowMatchScore(query, s, fields); score >= 0 && (best < 0 || score < best) {
 			best = score
 		}
 	}
 	header := session{Project: g.Project, CWD: g.CWD, Server: g.Server}
-	if score := rowMatchScore(query, header); score >= 0 && (best < 0 || score < best) {
+	if score := rowMatchScore(query, header, fields); score >= 0 && (best < 0 || score < best) {
 		best = score
 	}
 	if best < 0 {
@@ -1022,9 +1030,9 @@ func groupMatchScore(query string, g group) int {
 }
 
 // rowMatchScore ranks one query against one row: the worst best-term of its terms, or -1 when
-// any term does not match.  It is the ranking form of matchesRow, scoped terms included.
-func rowMatchScore(query string, s session) int {
-	fields := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
+// any term does not match.  It is the ranking form of matchesRowFields, scoped terms included.
+func rowMatchScore(query string, s session, fields []string) int {
+	values := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
 		"zmx": s.ZmxName, "cmd": s.Command, "server": s.Server}
 	best := 0
 	for _, term := range strings.Fields(query) {
@@ -1033,8 +1041,13 @@ func rowMatchScore(query string, s session) int {
 			continue
 		}
 		termBest := -1
-		for field, text := range fields {
-			if scope != "" && scope != field {
+		searched := fields
+		if scope != "" {
+			searched = []string{scope}
+		}
+		for _, field := range searched {
+			text, known := values[field]
+			if !known {
 				continue
 			}
 			if score := matchScore(value, text); score >= 0 && (termBest < 0 || score < termBest) {
@@ -1050,6 +1063,10 @@ func rowMatchScore(query string, s session) int {
 	}
 	return best
 }
+
+// searchFields is every field a bare filter term searches, in the order the marks are read.
+// A configured filter_fields narrows this set.
+var searchFields = []string{"name", "project", "cwd", "zmx", "cmd", "server"}
 
 // scopedTerm splits one query term into the field it restricts itself to, if any: `@` names
 // the project, `#` the session name, `~` the path, and `host:` the host.  A bare term is not
@@ -1071,23 +1088,33 @@ func scopedTerm(term string) (field, value string) {
 // matchesRow applies every whitespace-separated term to the fields a reader would search:
 // the name, the project, the directory, the host the row runs on, and, for a zmx session, the
 // handle zmx knows and the command it runs.  A term may land in any of them, unless a prefix
-// restricts it to one.
+// restricts it to one.  matchesRowFields is the same with a configured field set.
 func matchesRow(query string, s session) (bool, map[string][]int) {
-	fields := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
+	return matchesRowFields(query, s, searchFields)
+}
+
+// matchesRowFields is matchesRow over one field set: a bare term searches only those fields,
+// and a scoped term still searches its own field, which the set does not take away.
+func matchesRowFields(query string, s session, fields []string) (bool, map[string][]int) {
+	values := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
 		"zmx": s.ZmxName, "cmd": s.Command, "server": s.Server}
-	order := []string{"name", "project", "cwd", "zmx", "cmd", "server"}
 	marks := map[string][]int{}
 	for _, term := range strings.Fields(query) {
 		scope, value := scopedTerm(term)
 		if value == "" {
 			continue
 		}
+		searched := fields
+		if scope != "" {
+			searched = []string{scope}
+		}
 		hit := false
-		for _, field := range order {
-			if scope != "" && scope != field {
+		for _, field := range searched {
+			text, known := values[field]
+			if !known {
 				continue
 			}
-			if ok, idx := matchCell(value, fields[field]); ok {
+			if ok, idx := matchCell(value, text); ok {
 				hit = true
 				if len(idx) > 0 {
 					marks[field] = idx
