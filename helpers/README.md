@@ -23,16 +23,100 @@ sh2pil-last --session ~/.pi/agent/sessions/<project>/<file>.jsonl --full
 
 Every helper uses the Python standard library only.
 
-## Find the install path
+## Install
+
+There is nothing to install separately. The helpers and the picker are **one formula** and
+**one archive**, and they must end up in **one directory**.
+
+### Homebrew
+
+```sh
+brew tap sashkachan/tap
+brew install sh2pil
+```
+
+Four programs appear in `$(brew --prefix)/bin`: `sh2pil`, `sh2pil-sessions`, `sh2pil-open`,
+`sh2pil-last`. Homebrew keeps the real files in `$(brew --prefix)/Cellar/sh2pil/<version>/bin`
+and symlinks each one into `bin`; both directories hold all four, so the sibling lookup works
+either way, and the executable bit comes from the archive.
+
+### Without Homebrew
+
+The release archive keeps the helper scripts under `helpers/`. Flatten them next to the picker:
+
+```sh
+tar xzf sh2pil_<version>_darwin_arm64.tar.gz
+cd sh2pil_<version>_darwin_arm64
+mkdir -p ~/.local/bin
+install -m 0755 sh2pil ~/.local/bin/sh2pil
+install -m 0755 helpers/sh2pil-sessions helpers/sh2pil-open helpers/sh2pil-last ~/.local/bin/
+```
+
+### On a host with no helper at all
+
+Nothing is needed. `sh2pil-open` sends a helper's own code over the SSH connection and runs it
+with `python3 -` when the host has no copy, or an older one. The host needs `python3`, and
+`zsh` or `bash` for its login shell.
+
+### Why one directory
+
+```go
+helperDir = filepath.Dir(os.Executable())                        // the picker
+path = pathlib.Path(__file__).resolve().parent / 'sh2pil-open'   // the helpers
+```
+
+A key-binding child gets a minimal `PATH`, so nothing is looked up in it. To keep a copy
+somewhere else, name it with `SH2PIL_SESSIONS`, `SH2PIL_OPEN`, or `SH2PIL_LAST` rather than
+moving one program away from the others.
+
+### Check the install
+
+```sh
+sh2pil --version
+sh2pil-sessions harnesses --json   # [{"harness":"pi","present":true,"reason":""}, ...]
+sh2pil-open live --json            # the chats a pi process is running here
+sh2pil-last --help
+```
+
+## Dependencies
+
+Only **python3** is needed to run the picker and read sessions. **zsh** is needed for any
+action that opens something. The rest are stores, terminals, and the tools an action opens, and
+each of those is optional — a missing one is reported, not fatal.
+
+| Dependency | Needed for | Notes |
+|---|---|---|
+| **python3** 3.9+ | the helpers | Standard library only. Resolved in the order `SH2PIL_PYTHON`, the build-time path, `$(brew --prefix)/bin`, `/usr/local/bin`, `/usr/bin`, `PATH`, so a minimal `PATH` is fine. |
+| **zsh** | every action that opens something | Launches and tool runs use `zsh -lic`, so the child reads the login and interactive files and finds the Homebrew directory. Reads work without it; actions do not. |
+| **zoxide** | the project list | `sh2pil-sessions projects`, and the remote equivalent, read `zoxide query -l`. Without it there are no project groups. |
+| **zmx** | chats that outlive their window | The zmx pane, the `⚡` marker, the state column. Discovered on `PATH`, then `~/.local/share/mise/shims/zmx`, `$(brew --prefix)/bin/zmx`, `~/.local/bin/zmx`. |
+| **mise** | *nothing* | Only another place to find `zmx`, through its shim. Optional; `zmx_remote_binary` can name the shim explicitly. |
+| **git** | the lazygit action | Used to find the repository root. |
+| **ssh** | remote targets | For the master socket the reads and the actions share. |
+| **kitty** / **tmux** | the terminals | `kitten` does the window lookup and remote control; tmux is the fallback, and the pane host. |
+| **nvim**, **lazygit**, **yazi** | the actions that open them | `$EDITOR` wins over `nvim`. |
+| **Pi**, **Claude Code**, **Codex**, **OpenCode** | the rows of that store | The three file-backed stores are read from `~/.pi/agent/sessions`, `~/.claude/projects`, and `~/.codex/sessions`; OpenCode is read through its CLI. |
+
+## The live state column
+
+The `● needs you`, `● bash`, and `● idle` marks come from records written by a Pi extension
+that is **not** shipped here — it belongs to the dotfiles setup this tool grew out of. The
+extension writes one file per running chat into `~/.local/state/pib-open/live`, which the
+helper reads. Without it nothing breaks: a row simply says `live`, which is what every row said
+before the state existed.
+
+Write records with a `state`, a tool *name*, a dialog kind, and the dialog's short label — a
+status, never content. See `sh2pil-open state --json` for the shape it reads.
+
+## Paths in the examples
 
 ```sh
 brew --prefix            # for example /opt/homebrew
-ls "$(brew --prefix)/bin" | grep -E '^(sh2pil|sh2pil-sessions|sh2pil-open|sh2pil-last)$'
 ```
 
 A terminal key binding usually starts the program with a **minimal PATH** that does not
 include the Homebrew `bin` directory. Use absolute paths in a key binding. The examples below
-use `$PREFIX` for the output of `brew --prefix`, and `$NVIM` for the path of your editor.
+use `$PREFIX` for the output of `brew --prefix` and `$NVIM` for the path of your editor.
 
 ## kitty
 
