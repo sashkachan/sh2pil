@@ -19,3 +19,14 @@ func TestPrintConfigurationShowsPerHostTools(t *testing.T) {
 		t.Fatal("printConfiguration invented a host")
 	}
 }
+
+// TestPrintConfigurationNamesTheListOrder pins that the order the picker opens in is visible where
+// a reader looks for it.
+func TestPrintConfigurationNamesTheListOrder(t *testing.T) {
+	writeConfig(t, "default_order: priority\n")
+	var out bytes.Buffer
+	printConfiguration(&out, loadConfig())
+	if !strings.Contains(out.String(), "default_order: priority") {
+		t.Fatalf("printConfiguration did not show the list order:\n%s", out.String())
+	}
+}

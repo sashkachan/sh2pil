@@ -18,6 +18,7 @@ func printConfiguration(out io.Writer, cfg Config) {
 	}
 	fmt.Fprintln(out, "harnesses: "+strings.Join(cfg.Harnesses, ", "))
 	fmt.Fprintln(out, "default_view: "+cfg.DefaultView)
+	fmt.Fprintln(out, "default_order: "+cfg.Order)
 	fmt.Fprintln(out, "default_target: "+orLocal(cfg.DefaultTarget))
 	fmt.Fprintln(out, fmt.Sprintf("close_on_navigate: %t", cfg.CloseOnNavigate))
 	fmt.Fprintln(out, fmt.Sprintf("zmx: %t", cfg.Zmx))

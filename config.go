@@ -87,6 +87,21 @@ const (
 	viewZmx      = "zmx"      // the live zmx sessions of the same target
 )
 
+// The two orders the project list can be drawn in.  `project` groups the sessions under their
+// projects, which is how a known project is found; `priority` makes one flat list ordered by what
+// needs a person, which is the question the picker exists to answer.  The order is a sort and not
+// a third pane, so the cursor, the search, the marks, and every row action stay as they are.
+const (
+	orderProject  = "project"  // the project groups, with their sessions under them
+	orderPriority = "priority" // one flat list, ordered by what needs a person
+)
+
+// defaultOrder is the order the project list opens in.
+const defaultOrder = orderProject
+
+// knownOrders are the accepted values of the default_order setting.
+var knownOrders = map[string]bool{orderProject: true, orderPriority: true}
+
 // configPathOverride is the file named by --config or SH2PIL_CONFIG.  The test suites and a
 // second profile use it; when it is empty the shared file is used.
 var configPathOverride string
@@ -182,6 +197,7 @@ func writeConfigOverlay(key, value string) error {
 type Config struct {
 	Harnesses       []string
 	DefaultView     string
+	Order           string // project or priority: the order the project list opens in
 	DefaultTarget   string
 	CloseOnNavigate bool
 	Zmx             bool
@@ -219,7 +235,7 @@ type Config struct {
 // A key outside it is a warning, not an error: the file is shared, and a newer program may
 // write a key this build does not know yet.
 var knownConfigKeys = map[string]bool{
-	"harnesses": true, "default_view": true, "default_target": true,
+	"harnesses": true, "default_view": true, "default_order": true, "default_target": true,
 	"close_on_navigate": true, "zmx": true, "zmx_servers": true,
 	"zmx_remote_binary": true, "zoxide_remote_binary": true,
 	"editor": true, "file_browser": true, "git_tool": true, "shell": true,
@@ -239,6 +255,7 @@ func loadConfig() Config {
 	cfg := Config{
 		Harnesses:       append([]string{}, knownHarnesses...),
 		DefaultView:     viewSessions,
+		Order:           defaultOrder,
 		CloseOnNavigate: defaultCloseOnNavigate,
 		StatePoll:       defaultStatePoll,
 		AttentionSort:   defaultAttentionSort,
@@ -268,6 +285,15 @@ func loadConfig() Config {
 	cfg.Harnesses = parseHarnesses(cfg.Values["harnesses"])
 	if raw, ok := cfg.Values["default_view"]; ok && (raw == viewSessions || raw == viewZmx) {
 		cfg.DefaultView = raw
+	}
+	if raw, ok := cfg.Values["default_order"]; ok {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if knownOrders[value] {
+			cfg.Order = value
+		} else {
+			cfg.Warnings = append(cfg.Warnings,
+				fmt.Sprintf("default_order: %q is not project or priority; using %s", raw, defaultOrder))
+		}
 	}
 	if raw, ok := cfg.Values["close_on_navigate"]; ok {
 		if parsed, err := strconv.ParseBool(raw); err == nil {

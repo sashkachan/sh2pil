@@ -2,6 +2,15 @@
 # sessions, or `projects` for the zoxide project list.  alt+p cycles the three lists.
 default_view: sessions
 
+# The order the project list opens in.  `project` groups the sessions under their projects, which
+# is how a known project is found.  `priority` makes one flat list with no project header, ordered
+# by what needs a person: a chat blocked on a prompt first, then one that has settled, then one
+# that is running, then everything else.  Inside a rank an unread row comes first, then the most
+# recently modified, then the project, then the session name.  ctrl+o switches between the two
+# while the picker runs, and it is a sort and not a third pane: the search, the marks, and every row
+# action stay as they are.  The palette's `list order` row cycles it, and ctrl+s saves it.
+default_order: project
+
 # SSH aliases or user@host destinations; rows group by destination.  A host is asked for its
 # own Pi or OpenCode sessions, which the picker lists beside the local ones with the host in a
 # column of its own, and for its live zmx sessions and zoxide projects.  Refresh with ctrl+r.
@@ -36,6 +45,11 @@ state_poll_seconds: 3
 # holds it, and says so when there is none.  Set this to false to read every group in the plain order
 # (n still works).
 attention_sort: true
+
+# With default_order: priority the flat list reads a wider scale than attention_sort describes:
+# blocked first, then settled (idle), then running (a tool, or a live chat with nothing said), then
+# everything else.  A host's reported state ranks the same as this machine's, so its blocked chat is
+# lifted too; a row nothing reports as live lands in the last rank.
 
 # What the picker does when a chat starts waiting for you while it is open: `terminal` raises a
 # desktop notification (OSC 9), `bell` rings the terminal bell (kitty is configured with

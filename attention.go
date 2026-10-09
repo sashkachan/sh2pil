@@ -21,9 +21,10 @@ import (
 //
 // Two rules run through all of it.  A chat needs a person when its state is `blocked`: it is
 // stopped on a question and nothing else moves until it is answered.  A chat that is `idle` has
-// settled and wants the next instruction, which is not urgent and is not ranked.  Nothing here
-// reads a transcript, and nothing here carries prompt text anywhere: a mark and a notification
-// name a project and a state, never what was asked.
+// settled and wants the next instruction, which is not urgent and is not lifted in the grouped
+// list; the flat priority list ranks it, and the trade-off is recorded at the rank scale below.
+// Nothing here reads a transcript, and nothing here carries prompt text anywhere: a mark and a
+// notification name a project and a state, never what was asked.
 
 // The notify modes, which are the accepted values of the notify setting.
 const (
@@ -32,22 +33,81 @@ const (
 	notifyModeTerminal = "terminal"
 )
 
-// Where a row belongs inside its group.  Only one state is lifted, and phase 1 measured why: `idle`
-// is what every finished chat is, so lifting it would lift most of the list and the rank would stop
-// saying anything.  `blocked` is the one state that needs a person now, and a rank of its own is
-// left for anything a later phase measures as attention.
+// The rank scale.  Only the first rank is lifted in the grouped list, and phase 1 measured why:
+// `idle` is what every finished chat is, so lifting it would lift most of the list and the rank
+// would stop saying anything.  `blocked` is the one state that needs a person now.  The flat
+// priority list makes the opposite bargain -- a reader who asked for it wants every settled chat
+// above every running one -- so its ranking reads the whole scale, and accepts that the settled
+// rank is long.
 const (
 	rankWaiting  = iota // blocked on a person: the row this picker exists to find
-	rankOrdinary        // everything else, in the order the read gave
+	rankSettled         // idle: the chat has finished and wants the next instruction
+	rankRunning         // a tool is running, or the chat is live and nothing said what it is doing
+	rankOrdinary        // ended, gone, not running, or a state nothing here knows
 )
 
-// rowRank reads one row's rank from the state the picker already holds.  A row nothing reports as
-// live is ordinary, and so is every row on a host: a host's own state does not travel yet.
+// rowRank reads one row's rank for the grouped sort.  Only a chat blocked on a person is lifted,
+// which is the rule the grouped list has always kept: every other row keeps the order the read
+// gave, whether the row is this machine's or a host's.  A row nothing reports as live is ordinary.
 func (m *model) rowRank(s session) int {
 	if m.waiting(s) {
 		return rankWaiting
 	}
 	return rankOrdinary
+}
+
+// priorityRank reads one row's rank for the flat priority list, from the state the picker already
+// holds.  The state ranks the same wherever it came from, so a host's reported state lifts its row
+// like a local one and a host that says nothing leaves its rows among the ordinary ones.  A chat
+// that is not live has no state to rank, so it is ordinary too.
+func (m *model) priorityRank(s session) int {
+	info, live := m.rowLive(s)
+	if !live {
+		return rankOrdinary
+	}
+	switch {
+	case info.State == "blocked":
+		return rankWaiting
+	case info.State == "idle":
+		return rankSettled
+	case info.State == "tool":
+		return rankRunning
+	case info.State == "" && !info.Stale:
+		// Live with nothing said about it: a record from an older extension, or a chat that has
+		// just come alive.
+		return rankRunning
+	}
+	return rankOrdinary
+}
+
+// rankAll orders the flat priority list: what needs a person first, then what has settled, then
+// what is running, then everything else.  This is the one place the rank order lives.  Inside one
+// rank the reader's own signals decide: an unread row first, then the most recently touched, then
+// the project, then the session name.  The sort is stable, so two rows that agree on everything
+// keep the order the read gave.
+func (m *model) rankAll(rows []session) []session {
+	if len(rows) < 2 {
+		return rows
+	}
+	out := make([]session, len(rows))
+	copy(out, rows)
+	sort.SliceStable(out, func(i, j int) bool {
+		left, right := out[i], out[j]
+		if leftRank, rightRank := m.priorityRank(left), m.priorityRank(right); leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if m.unread[left.ID] != m.unread[right.ID] {
+			return m.unread[left.ID]
+		}
+		if left.Mod != right.Mod {
+			return left.Mod > right.Mod
+		}
+		if left.Project != right.Project {
+			return left.Project < right.Project
+		}
+		return left.Name < right.Name
+	})
+	return out
 }
 
 // rankRows lifts the rows that wait on a person above the rest of their own group.  Only the

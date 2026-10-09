@@ -1409,3 +1409,74 @@ func TestFilterFieldsRestrictBareTerms(t *testing.T) {
 		t.Fatal("a scoped term was dropped with the configured field set")
 	}
 }
+
+// TestPriorityFrameFillsTheWindowExactly pins the frame arithmetic for the flat list: every row
+// sits at depth 0 and keeps its project column, so a row is exactly as wide as the grouped one and
+// the frame is exactly as tall.  A frame one line too tall, or one column too wide, makes the
+// terminal scroll.
+func TestPriorityFrameFillsTheWindowExactly(t *testing.T) {
+	groups := make([]group, 0, 5)
+	for index := 0; index < 5; index++ {
+		sessions := make([]session, 0, 3)
+		for inner := 0; inner < 3; inner++ {
+			sessions = append(sessions, session{
+				ID:      fmt.Sprintf("ses_%d_%d", index, inner),
+				Name:    fmt.Sprintf("a long session name that has to be clipped %d", inner),
+				Project: fmt.Sprintf("project-%d", index), CWD: fmt.Sprintf("/work/project-%d", index),
+				Alive: true, Bytes: 2 * 1024 * 1024, Mod: 1791041092,
+			})
+		}
+		groups = append(groups, group{Project: fmt.Sprintf("project-%d", index),
+			CWD: fmt.Sprintf("/work/project-%d", index), Sessions: sessions})
+	}
+	for _, size := range [][2]int{{150, 34}, {80, 24}, {44, 18}, {20, 10}} {
+		m := model{view: viewSessions, width: size[0], height: size[1], showPrev: true,
+			listOrder: orderPriority, expanded: map[string]bool{}, live: map[string]liveInfo{},
+			data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: groups}}}
+		m.rebuildRows()
+		for _, row := range m.sessions {
+			if row.ProjectOnly || row.Depth != 0 {
+				t.Fatalf("%dx%d: the flat list drew %#v", size[0], size[1], row)
+			}
+		}
+		frame := m.View()
+		lines := strings.Split(frame, "\n")
+		if len(lines) != size[1] {
+			t.Errorf("%dx%d: frame is %d lines, want %d", size[0], size[1], len(lines), size[1])
+		}
+		for index, line := range lines {
+			if got := ansi.StringWidth(line); got > size[0] {
+				t.Errorf("%dx%d: line %d is %d columns, want at most %d: %q",
+					size[0], size[1], index, got, size[0], strings.TrimRight(ansi.Strip(line), " "))
+			}
+		}
+		// A flat row keeps its project column, because no header above it names the project.
+		if size[0] >= 80 && !strings.Contains(ansi.Strip(frame), "project-0") {
+			t.Errorf("%dx%d: a flat row lost its project column:\n%s", size[0], size[1],
+				ansi.Strip(frame))
+		}
+	}
+}
+
+// TestTheOrderCycleKeyIsRegistered pins the binding the order is reached by: ctrl+o is the
+// default, it is rebindable like every other action, and the help box carries it.
+func TestTheOrderCycleKeyIsRegistered(t *testing.T) {
+	if got := buildKeymap(nil).resolve(keyContextList, "ctrl+o"); got != "ctrl+o" {
+		t.Fatalf("ctrl+o resolved to %q, want list.order_cycle's own chord", got)
+	}
+	if got := buildKeymap(map[string]string{"list.order_cycle": "alt+s"}).
+		resolve(keyContextList, "alt+s"); got != "ctrl+o" {
+		t.Fatalf("the rebound order key resolved to %q, want the canonical ctrl+o", got)
+	}
+	covered := false
+	for _, row := range helpRows {
+		for _, name := range row.actions {
+			if name == "list.order_cycle" {
+				covered = true
+			}
+		}
+	}
+	if !covered {
+		t.Fatal("the order cycle has no help row")
+	}
+}

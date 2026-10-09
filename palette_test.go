@@ -434,3 +434,37 @@ func TestPaletteDoctorLineNamesTheBuildAndTheConfig(t *testing.T) {
 		t.Fatalf("doctor line = %q", line)
 	}
 }
+
+// TestPaletteOrderRowCyclesAndSaves pins the palette's list-order row: it changes the order in
+// force, leaves the palette open, and marks the setting for ctrl+s, like the mode row.  Store and
+// placement are remembered by their own state files; the order is a setting, so ctrl+s is what
+// makes it outlive the run.
+func TestPaletteOrderRowCyclesAndSaves(t *testing.T) {
+	m := &model{keymap: buildKeymap(nil), modal: "palette", listOrder: orderProject}
+	m.paletteAll = m.paletteEntriesFor(session{})
+	m.refilterPalette()
+	index := -1
+	for at, name := range m.toolChoices {
+		if name == paletteMetaOrder {
+			index = at
+		}
+	}
+	if index < 0 {
+		t.Fatal("the palette has no list-order row")
+	}
+	updated, _ := m.choosePalette(index)
+	m = updated.(*model)
+	if m.listOrder != orderPriority {
+		t.Fatalf("listOrder after the row = %q, want priority", m.listOrder)
+	}
+	if m.paletteChanged != "default_order=priority" {
+		t.Fatalf("paletteChanged = %q, want default_order=priority", m.paletteChanged)
+	}
+	if m.modal != "palette" {
+		t.Fatalf("the value row closed the palette; it must stay for ctrl+s")
+	}
+	if label := m.paletteMetaLabel(paletteMetaOrder); !strings.Contains(label, "list order") ||
+		!strings.Contains(label, orderPriority) {
+		t.Fatalf("the order row label = %q, want the setting and the value in force", label)
+	}
+}

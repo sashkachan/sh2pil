@@ -105,6 +105,9 @@ type model struct {
 	// view is the list that owns the cursor: the project groups, or the zmx pane.  Both panes
 	// are on screen at once, so this is focus and not a mode.
 	view string
+	// listOrder is the order the project list is drawn in: the project groups, or one flat list
+	// ordered by what needs a person.  See rebuildRows and attention.go.
+	listOrder string
 	// sessions and zmxRows are the rows of the two panes, for the current target.  rebuildRows
 	// is the one place that builds them.
 	sessions []session
@@ -274,6 +277,7 @@ func main() {
 		gitTool: settings.GitTool, toolHosts: settings.ToolHosts, mode: settings.Mode, triggers: settings.Triggers,
 		harness:   chosenHarness,
 		harnesses: harnesses, closeOnNavigate: settings.CloseOnNavigate, view: viewSessions,
+		listOrder:  settings.Order,
 		windowMenu: *menu, alwaysAsk: *menu, windowRow: windowMenuRow(*menuCWD, *menuServer),
 		statePoll:     settings.StatePoll,
 		attentionSort: settings.AttentionSort, notify: settings.Notify,
@@ -1073,6 +1077,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		writeHarness(m.harness)
 		m.status = "a new chat uses " + harnessTitle(m.harness) + "; the list shows every store"
 		return m, nil
+	case "ctrl+o":
+		return m.cycleOrder()
 	case "ctrl+v":
 		m.showPrev = !m.showPrev
 		if !m.showPrev {
@@ -1790,6 +1796,7 @@ const (
 	paletteMetaMode    = "meta.mode"
 	paletteMetaStore   = "meta.store"
 	paletteMetaPlace   = "meta.placement"
+	paletteMetaOrder   = "meta.order"
 	paletteMetaReload  = "meta.reload_config"
 	paletteMetaOpen    = "meta.open_config"
 	paletteMetaVersion = "meta.version"
@@ -1824,6 +1831,7 @@ func (m *model) paletteEntriesFor(s session) []paletteEntry {
 		paletteEntry{name: paletteMetaMode, section: "picker"},
 		paletteEntry{name: paletteMetaStore, section: "picker"},
 		paletteEntry{name: paletteMetaPlace, section: "picker"},
+		paletteEntry{name: paletteMetaOrder, section: "picker"},
 		paletteEntry{name: paletteMetaReload, section: "picker"},
 		paletteEntry{name: paletteMetaOpen, section: "picker"},
 		paletteEntry{name: paletteMetaVersion, section: "picker"},
@@ -1918,6 +1926,8 @@ func (m *model) paletteMetaLabel(name string) string {
 		return "store for a new chat · " + harnessTitle(m.harness)
 	case paletteMetaPlace:
 		return "placement · " + describeLayout(m.layout)
+	case paletteMetaOrder:
+		return "list order · " + m.listOrder
 	case paletteMetaReload:
 		return "reload the configuration"
 	case paletteMetaOpen:
@@ -2075,6 +2085,12 @@ func (m *model) runPaletteMeta(name string) (tea.Model, tea.Cmd) {
 		m.status = "new terminals go to " + describeLayout(m.layout)
 		m.refilterPalette()
 		return m, nil
+	case paletteMetaOrder:
+		cmd := m.switchOrder()
+		m.paletteChanged = "default_order=" + m.listOrder
+		m.status = describeOrder(m.listOrder) + " · ctrl+s saves it"
+		m.refilterPalette()
+		return m, cmd
 	case paletteMetaVersion:
 		m.closePalette()
 		m.status = "sh2pil " + version
@@ -2121,6 +2137,7 @@ func (m *model) reloadConfig() string {
 	m.editor, m.fileBrowser, m.gitTool = settings.Editor, settings.FileBrowser, settings.GitTool
 	m.toolHosts = settings.ToolHosts
 	m.attentionSort, m.notify, m.statePoll = settings.AttentionSort, settings.Notify, settings.StatePoll
+	m.listOrder = settings.Order
 	m.filterAll, m.filterKeep = !settings.FilterHide, settings.FilterKeep
 	m.filterFields = settings.FilterFields
 	m.harnesses = settings.Harnesses

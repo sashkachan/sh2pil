@@ -77,12 +77,12 @@
 // that would do nothing.  Typing filters the rows, an earlier name match first; esc clears the
 // filter before it closes the palette.
 //
-// The picker section also carries rows that are not bound actions: the mode, the store, and
-// the placement in force (enter cycles the value for the session), reloading the config chain,
-// opening the configuration in the editor, the version, and a one-line check of the config and
-// the key map.  On a host, a row offers to forget its SSH master.  ctrl+s writes the value of
-// the last value row to ~/.config/sh2pil/config.d/90-local.yaml, so one setting can outlive
-// the run without editing the tracked file.
+// The picker section also carries rows that are not bound actions: the mode, the store, the
+// placement in force, and the list order (enter cycles the value for the session), reloading the
+// config chain, opening the configuration in the editor, the version, and a one-line check of the
+// config and the key map.  On a host, a row offers to forget its SSH master.  ctrl+s writes the
+// value of the last value row to ~/.config/sh2pil/config.d/90-local.yaml, so one setting can
+// outlive the run without editing the tracked file.
 //
 // The first command is the delete interface (alt+d): it removes the sessions older than an age.
 // The age is one field -- `1d`, `3h`, `10m`, or a combination such as `1d3h10m` -- and a number
@@ -104,6 +104,18 @@
 // chat is, so lifting that too would lift most of the list. Only the project list is ranked: the
 // groups keep their own order, and the zmx pane keeps the order it was read in. `attention_sort`
 // (true by default) turns the ranking off.
+//
+// ctrl+o draws the project list in the other order. `project` groups the sessions under their
+// projects, which is how a known project is found; `priority` makes one flat list with no header,
+// ordered by what needs a person: blocked first, then settled, then running, then everything else,
+// with an unread row, the most recently touched, the project, and the session name breaking a tie
+// and the read order breaking what is left. The rank comes from the state the picker holds, so a
+// host's blocked chat is lifted like a local one, and a row nothing reports as live -- a host's
+// row whose host said nothing, or a chat that is gone -- lands last. The order is a sort and not a
+// third pane: the cursor, the search, the marks, the preview, and every row action stay as they
+// are, and the cursor returns to the top because the first row is what the order exists to show.
+// `default_order` selects the order the picker opens in (`project` by default), and the palette's
+// `list order` row cycles it and ctrl+s saves it.
 //
 // A chat that starts waiting is announced in one message, which names a project and a state and
 // nothing else: never prompt text, a tool argument, a path, or a transcript excerpt. `notify`
@@ -135,8 +147,9 @@
 // (default_target: local, or one of the zmx_servers destinations), whether the picker closes
 // after a launched action (close_on_navigate, default true), whether a new, resumed, or
 // forked chat runs inside a zmx session of its own (zmx, default false; sh2pil-open opens and
-// labels that session), how the rows that wait on a person are ranked (attention_sort), and how
-// such a row is announced (notify).
+// labels that session), the order the project list opens in (`default_order: project`, or
+// `priority` for the flat list ordered by what needs a person), how the rows that wait on a
+// person are ranked (attention_sort), and how such a row is announced (notify).
 //
 // Every keybinding is a setting too: `key.<context>.<action>` moves one action, a comma list
 // gives it several chords, and `none` disables it, for example `key.list.fork: alt+p`.
@@ -263,6 +276,8 @@
 //	           each time
 //	           a shell, lazygit, yazi, and the editor take the same preference on every list;
 //	           ask offers the same pane too (4)
+//	ctrl+o     cycle the list order: the project groups, or one flat list by what needs you most
+//	           (a chat nothing reports as live lands last)
 //	.          travel: the ways into the project space of the row under the cursor, which is what
 //	           Cmd+. opens for a window outside the picker
 //	alt+p      the command palette (also ctrl+k and `:`): the commands that are not travel, the

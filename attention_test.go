@@ -548,3 +548,161 @@ func TestAHostMessageNamesTheHostOnlyWhenThereIsOne(t *testing.T) {
 		t.Fatalf("remote message %q carries a path", remote)
 	}
 }
+
+// orderModel is the smallest picker in the priority order: two project groups, each closed, with a
+// chat blocked on a person in one of them.  The grouped list shows only the two headers, so a row
+// the reader has to answer is hidden; the flat list shows it first.
+func orderModel() *model {
+	blocked := session{ID: "ses_blocked", Name: "blocked work", Project: "api", CWD: "/srv/api", Alive: true}
+	idle := session{ID: "ses_idle", Name: "settled work", Project: "api", CWD: "/srv/api", Alive: true}
+	ended := session{ID: "ses_ended", Name: "old work", Project: "web", CWD: "/srv/web", Alive: true}
+	return &model{view: viewSessions, width: 140, height: 24, attentionSort: true,
+		listOrder: orderProject, keymap: buildKeymap(nil), showPrev: true,
+		expanded: map[string]bool{}, cache: map[string]preview{},
+		live: map[string]liveInfo{
+			"ses_blocked": {ID: "ses_blocked", CWD: "/srv/api", State: "blocked"},
+			"ses_idle":    {ID: "ses_idle", CWD: "/srv/api", State: "idle"},
+		},
+		unread: map[string]bool{"ses_idle": true},
+		seen:   map[string]string{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "api", CWD: "/srv/api", Sessions: []session{idle, blocked}},
+			{Project: "web", CWD: "/srv/web", Sessions: []session{ended}}}}}}
+}
+
+// TestThePriorityOrderRanksEveryState pins the flat scale: a chat blocked on a person first, then
+// one that has settled, then one that is running -- a tool, or a live chat with nothing said -- and
+// everything else last.  The grouped order keeps its own, narrower rule, which
+// TestTheAttentionSortLiftsOnlyTheChatsThatWaitOnAPerson pins.
+func TestThePriorityOrderRanksEveryState(t *testing.T) {
+	states := map[string]string{
+		"ses_blocked": "blocked", // rank 0
+		"ses_idle":    "idle",    // rank 1
+		"ses_tool":    "tool",    // rank 2
+		"ses_live":    "live",    // rank 2: live, and nothing said what it is doing
+		"ses_ended":   "ended",   // rank 3
+		"ses_unknown": "unknown", // rank 3: a state nothing here knows
+	}
+	m := queueModel(true, states)
+	m.listOrder = orderPriority
+	m.rebuildRows()
+	want := []string{"ses_blocked", "ses_idle", "ses_live", "ses_tool", "ses_ended", "ses_unknown"}
+	if got := sessionIDs(m.sessions); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("priority order = %v, want %v", got, want)
+	}
+	for _, row := range m.sessions {
+		if row.ProjectOnly {
+			t.Fatalf("the priority list drew a project header: %#v", row)
+		}
+		if row.Depth != 0 {
+			t.Fatalf("row %s is at depth %d, want 0: the flat list has no header to nest under",
+				row.ID, row.Depth)
+		}
+	}
+}
+
+// TestThePriorityOrderBreaksTiesByTheReadersOwnSignals pins the order inside one rank: an unread
+// row first, then the most recently touched, then the project, then the session name.  The sort is
+// stable, so two rows that agree on all of it keep the order the read gave.
+func TestThePriorityOrderBreaksTiesByTheReadersOwnSignals(t *testing.T) {
+	rows := []session{
+		{ID: "ses_repo", Name: "a", Project: "repo", CWD: "/tmp/repo", Alive: true, Mod: 5},
+		{ID: "ses_unread", Name: "d", Project: "repo", CWD: "/tmp/repo", Alive: true, Mod: 1},
+		{ID: "ses_new", Name: "c", Project: "repo", CWD: "/tmp/repo", Alive: true, Mod: 20},
+		{ID: "ses_alpha_b", Name: "b", Project: "alpha", CWD: "/tmp/alpha", Alive: true, Mod: 5},
+		{ID: "ses_alpha_a", Name: "a", Project: "alpha", CWD: "/tmp/alpha", Alive: true, Mod: 5},
+		{ID: "ses_beta", Name: "a", Project: "beta", CWD: "/tmp/beta", Alive: true, Mod: 5},
+	}
+	live := map[string]liveInfo{}
+	for _, row := range rows {
+		live[row.ID] = liveInfo{ID: row.ID, CWD: row.CWD, State: "idle"}
+	}
+	m := &model{view: viewSessions, width: 140, height: 40, listOrder: orderPriority,
+		expanded: map[string]bool{}, cache: map[string]preview{}, live: live,
+		unread: map[string]bool{"ses_unread": true},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "repo", CWD: "/tmp/repo",
+				Sessions: []session{rows[0], rows[1], rows[2]}},
+			{Project: "alpha", CWD: "/tmp/alpha", Sessions: []session{rows[3], rows[4]}},
+			{Project: "beta", CWD: "/tmp/beta", Sessions: []session{rows[5]}}}}}}
+	m.rebuildRows()
+	want := []string{"ses_unread", "ses_new", "ses_alpha_a", "ses_alpha_b", "ses_beta", "ses_repo"}
+	if got := sessionIDs(m.sessions); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("tie-broken order = %v, want %v", got, want)
+	}
+}
+
+// TestThePriorityOrderRanksAReportedStateWhereverItComesFrom pins the scale's source: the rank
+// comes from the state the picker holds, so a host's blocked chat is lifted like a local one.  A
+// row nothing reports as live has no state to rank, so it lands in the last rank with the ended
+// chats.
+func TestThePriorityOrderRanksAReportedStateWhereverItComesFrom(t *testing.T) {
+	dead := session{ID: "ses_dead", Name: "dead", Project: "repo", CWD: "/tmp/repo", Alive: true}
+	local := session{ID: "ses_local", Name: "local", Project: "repo", CWD: "/tmp/repo", Alive: true}
+	remote := session{ID: "ses_remote", Name: "remote", Project: "repo", CWD: "/tmp/repo",
+		Alive: true, Live: true, Server: "build-host"}
+	m := &model{view: viewSessions, width: 140, height: 40, listOrder: orderPriority,
+		expanded: map[string]bool{}, cache: map[string]preview{},
+		live: map[string]liveInfo{"ses_local": {ID: "ses_local", State: "idle"}},
+		remoteStates: map[string]liveInfo{
+			remoteStateKey("build-host", "ses_remote"): {ID: "ses_remote", State: "blocked"}},
+		remoteSeen: map[string]string{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "repo", CWD: "/tmp/repo", Sessions: []session{dead, local, remote}}}}}}
+	m.rebuildRows()
+	want := []string{"ses_remote", "ses_local", "ses_dead"}
+	if got := sessionIDs(m.sessions); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("mixed-target order = %v, want %v", got, want)
+	}
+}
+
+// TestTheOrderCycleKeyShowsTheQueueInOneFlatList pins ctrl+o: the grouped list becomes one flat
+// list with no header, the chat that needs a person is under the cursor, the preview reads that
+// row, and the unread mark follows the settled chat into the flat list.  The key again puts the
+// groups back, so the grouped order is still the default and nothing is lost.
+func TestTheOrderCycleKeyShowsTheQueueInOneFlatList(t *testing.T) {
+	m := orderModel()
+	for _, row := range m.sessions {
+		if !row.ProjectOnly {
+			t.Fatalf("precondition: a closed group leaked a session row: %#v", row)
+		}
+	}
+	// The preview reads the transcript of the row the new list put under the cursor, and the switch
+	// schedules that read: the pane follows the reshaped list.
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+o")})
+	m = updated.(*model)
+	if cmd == nil {
+		t.Fatal("the order switch scheduled no preview read for the row it selected")
+	}
+	if m.listOrder != orderPriority {
+		t.Fatalf("listOrder = %q, want priority", m.listOrder)
+	}
+	if got := sessionIDs(m.sessions); strings.Join(got, ",") != "ses_blocked,ses_idle,ses_ended" {
+		t.Fatalf("priority rows = %v, want the flat queue", got)
+	}
+	if got := m.selected().ID; got != "ses_blocked" {
+		t.Fatalf("the cursor landed on %q, want the chat that needs a person", got)
+	}
+	if m.status != "sessions by priority" {
+		t.Fatalf("status = %q, want the order named", m.status)
+	}
+	if cmd := m.refreshPreview(); cmd == nil {
+		t.Fatal("the preview has nothing to read for the row the priority list selected")
+	}
+	// The unread mark travels with its row: the settled chat still carries it, and the selected
+	// chat's own mark is cleared by the cursor arriving on it, exactly as in the grouped list.
+	frame := ansi.Strip(m.View())
+	if !strings.Contains(frame, "•") {
+		t.Fatalf("the unread mark did not follow the row into the flat list:\n%s", frame)
+	}
+	_, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+o")})
+	if m.listOrder != orderProject {
+		t.Fatalf("the second ctrl+o left the order at %q, want the groups back", m.listOrder)
+	}
+	if len(m.sessions) != 2 || !m.sessions[0].ProjectOnly || !m.sessions[1].ProjectOnly {
+		t.Fatalf("the grouped list did not come back: %#v", m.sessions)
+	}
+	if m.status != "projects and sessions" {
+		t.Fatalf("status = %q, want the grouped order named", m.status)
+	}
+}

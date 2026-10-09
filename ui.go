@@ -317,7 +317,7 @@ func (m *model) switchList(next string) (tea.Model, tea.Cmd) {
 	if next == viewZmx {
 		m.status = "zmx sessions"
 	} else {
-		m.status = "projects and sessions"
+		m.status = describeOrder(m.listOrder)
 	}
 	return m, m.refreshPreview()
 }
@@ -380,6 +380,10 @@ func (m *model) toggleGroupAtCursor() {
 		m.status = "the zmx sessions are not grouped; [ and ] move between the panes"
 		return
 	}
+	if m.listOrder == orderPriority {
+		m.status = "the priority list has no groups; ctrl+o orders it by project"
+		return
+	}
 	rows := m.filtered()
 	at := *m.cursorPtr()
 	if at >= len(rows) {
@@ -414,15 +418,72 @@ func (m *model) toggleGroup(header session) {
 
 // rebuildRows materializes the rows of the two panes for the target on screen: one header per
 // project group, that group's sessions under it when it is open, and the target's zmx
-// sessions.  It is the one place that turns target data into rows, so every change that can
-// alter what is shown -- a read, an expansion, a target switch, a query, the ignored toggle --
-// calls it, and the accessors stay cheap.
+// sessions.  In the priority order there is no header: every row is a session, and the whole
+// list is ordered by what needs a person.  It is the one place that turns target data into
+// rows, so every change that can alter what is shown -- a read, an expansion, a target switch,
+// a query, the ignored toggle, the order -- calls it, and the accessors stay cheap.
 func (m *model) rebuildRows() {
 	data := m.data[m.targetLabel()]
-	rows := make([]session, 0, len(data.Groups))
-	groups, sessions, inZmx, live, waiting := 0, 0, 0, 0, 0
-	ordered := m.rankGroups(data.Groups)
-	for _, group := range ordered {
+	var rows []session
+	var counts listCounts
+	if m.listOrder == orderPriority {
+		// The group ranking belongs to the grouped list: the flat list ranks by state and
+		// keeps the read order underneath it.
+		rows, counts = m.priorityRows(data.Groups)
+	} else {
+		rows, counts = m.projectRows(m.rankGroups(data.Groups))
+	}
+	m.sessions = rows
+	m.zmxRows = m.visibleZmx(m.matchZmx(data.Zmx))
+	m.groupCount, m.sessionCount = counts.groups, counts.sessions
+	m.inZmxCount, m.liveCount, m.waitingCount = counts.inZmx, counts.live, counts.waiting
+	m.clampCursor()
+}
+
+// listCounts is what the header reports about one list: the groups it draws, the sessions it
+// holds, how many of them a window already shows in a zmx session, how many are live, and how
+// many wait on a person.  A closed group still counts the sessions under it: the count says what
+// the target holds, not what is on screen.
+type listCounts struct {
+	groups   int
+	sessions int
+	inZmx    int
+	live     int
+	waiting  int
+}
+
+// tallyRows folds one group's sessions into the counts, whether or not they are drawn.
+func (m *model) tallyRows(rows []session, counts *listCounts) {
+	for _, row := range rows {
+		counts.sessions++
+		if row.ZmxName != "" {
+			counts.inZmx++
+		}
+		if info, running := m.rowLive(row); running {
+			counts.live++
+			if info.State == "blocked" {
+				counts.waiting++
+			}
+		}
+	}
+}
+
+// listedGroup is one project group as the list holds it: the sessions of the group that belong
+// in the list, how many the query matched, and whether the group is dim because the query did not
+// answer it (the group filter_hide false keeps).
+type listedGroup struct {
+	group   group
+	found   []session
+	matched int
+	dimmed  bool
+}
+
+// listedGroups applies the ignored toggle, the query, and the shown toggle to the target's
+// groups, in the order they were read.  It is the one place that decides which sessions the list
+// holds, so the grouped list and the flat priority list show the same rows.
+func (m *model) listedGroups(groups []group) []listedGroup {
+	out := make([]listedGroup, 0, len(groups))
+	for _, group := range groups {
 		if group.Ignored != m.showIgnored {
 			continue
 		}
@@ -450,30 +511,31 @@ func (m *model) rebuildRows() {
 			dimmed = true
 			found = m.visibleSessions(group.Sessions)
 		}
+		out = append(out, listedGroup{group: group, found: found, matched: len(matched), dimmed: dimmed})
+	}
+	return out
+}
+
+// projectRows builds the grouped list: one header per project group, and the sessions of every
+// group the reader has opened.  The rows that wait on a person come first inside their own group
+// and a group's sessions come before the next header, so no project jumps above another one.
+func (m *model) projectRows(groups []group) ([]session, listCounts) {
+	rows := make([]session, 0, len(groups))
+	var counts listCounts
+	for _, entry := range m.listedGroups(groups) {
+		counts.groups++
+		beforeGroup := counts.waiting
 		// The rows that wait on a person come first inside their group, and the project list is
-		// the only list ranked: a group's own order, and the zmx pane's, are left alone.
-		found = m.rankRows(found)
-		groups++
-		beforeGroup := waiting
-		for _, row := range found {
-			sessions++
-			if row.ZmxName != "" {
-				inZmx++
-			}
-			if info, running := m.rowLive(row); running {
-				live++
-				if info.State == "blocked" {
-					waiting++
-				}
-			}
-		}
-		expanded := m.groupExpanded(group, len(matched), len(found))
-		header := groupRow(group, expanded)
-		header.Dim = dimmed
+		// the only list ranked: the zmx pane keeps the order it was read in.
+		found := m.rankRows(entry.found)
+		m.tallyRows(found, &counts)
+		expanded := m.groupExpanded(entry.group, entry.matched, len(entry.found))
+		header := groupRow(entry.group, expanded)
+		header.Dim = entry.dimmed
 		// A closed group hides every session under it, and a group starts closed, so the count a
 		// person has to answer belongs on the header too: otherwise the one row worth finding is
 		// only findable by opening every project in turn.
-		header.Waiting = waiting - beforeGroup
+		header.Waiting = counts.waiting - beforeGroup
 		if m.onlyShown {
 			// The header counts what the toggle left, so a count never promises a row that is not
 			// in the list.
@@ -485,15 +547,67 @@ func (m *model) rebuildRows() {
 		}
 		for _, row := range found {
 			row.Depth = 1
-			row.Dim = dimmed
+			row.Dim = entry.dimmed
 			rows = append(rows, row)
 		}
 	}
-	m.sessions = rows
-	m.zmxRows = m.visibleZmx(m.matchZmx(data.Zmx))
-	m.groupCount, m.sessionCount = groups, sessions
-	m.inZmxCount, m.liveCount, m.waitingCount = inZmx, live, waiting
-	m.clampCursor()
+	return rows, counts
+}
+
+// priorityRows builds the flat list: every session the list holds, with no project header, in the
+// order rankAll gives.  Every row sits at depth 0, which is what draws its project column and the
+// `(gone)` mark.  A dim group is a folded header that the flat list has no place for, so it
+// contributes nothing here.
+func (m *model) priorityRows(groups []group) ([]session, listCounts) {
+	flat := make([]session, 0, len(groups))
+	for _, entry := range m.listedGroups(groups) {
+		if entry.dimmed {
+			continue
+		}
+		for _, row := range entry.found {
+			row.Depth = 0
+			flat = append(flat, row)
+		}
+	}
+	flat = m.rankAll(flat)
+	var counts listCounts
+	m.tallyRows(flat, &counts)
+	return flat, counts
+}
+
+// nextOrder returns the other order, so one key reaches both.
+func nextOrder(order string) string {
+	if order == orderPriority {
+		return orderProject
+	}
+	return orderPriority
+}
+
+// describeOrder names the order in force, which is what the status line and the palette row say.
+func describeOrder(order string) string {
+	if order == orderPriority {
+		return "sessions by priority"
+	}
+	return "projects and sessions"
+}
+
+// switchOrder puts the other order in force, returns the cursor to the top of the project list, and
+// schedules the preview read for the row it landed on.  The top row is what the priority order
+// exists to show, and the old row index points at a different chat once the list is reshaped.  The
+// search is left alone: the filter marks are the reader's own work and the order is not a change of
+// subject.
+func (m *model) switchOrder() tea.Cmd {
+	m.listOrder = nextOrder(m.listOrder)
+	m.cursor, m.offset = 0, 0
+	m.rebuildRows()
+	return m.refreshPreview()
+}
+
+// cycleOrder switches the order from the list and says which one is on screen.
+func (m *model) cycleOrder() (tea.Model, tea.Cmd) {
+	cmd := m.switchOrder()
+	m.status = describeOrder(m.listOrder)
+	return m, cmd
 }
 
 // rankGroups orders the groups of one target while a query is active: the group that answers
@@ -1132,6 +1246,10 @@ func (m *model) headerView() string {
 	title := m.harnessFlags()
 	stats := fmt.Sprintf("%s · %s", plural(m.groupCount, "group"),
 		plural(m.sessionCount, "session"))
+	if m.listOrder == orderPriority {
+		// The flat list draws no headers, so its count is sessions and not groups.
+		stats = plural(m.sessionCount, "session") + " by priority"
+	}
 	if m.view == viewZmx {
 		title = titleSty.Render("zmx sessions")
 		stats = plural(len(m.zmxRows), "zmx session")
@@ -1513,6 +1631,9 @@ func (m *model) emptyProjectsNote() string {
 	if data.Note != "" {
 		return data.Note
 	}
+	if m.listOrder == orderPriority {
+		return "no sessions found"
+	}
 	return "no projects found in zoxide"
 }
 
@@ -1773,6 +1894,7 @@ var helpRows = []helpRow{
 	{actions: []string{"search.yank"}, does: "yank the last killed text in search"},
 	{actions: []string{"list.preview_toggle"}, does: "show or hide the preview pane"},
 	{actions: []string{"list.placement_cycle"}, does: "cycle placement: tab, its own window, new pane, the picker's own pane, or ask each time"},
+	{actions: []string{"list.order_cycle"}, does: "cycle the list order: the project groups, or one flat list by what needs you most"},
 	{actions: []string{"list.refresh"}, does: "read the current target again, connecting when its master is gone"},
 	{actions: []string{"list.reconnect"}, does: "end the SSH master for the target on screen and make a new one"},
 	{actions: []string{"list.menu"}, does: "travel: the ways into the selected project or session"},

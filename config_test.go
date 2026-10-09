@@ -225,3 +225,28 @@ func TestFilterOptions(t *testing.T) {
 		t.Fatalf("warnings = %#v, want one about srv", cfg.Warnings)
 	}
 }
+
+// TestDefaultOrder pins the setting the picker opens in: the grouped list by default, the flat
+// priority list when asked for, and a value nothing knows keeps the default and says so rather
+// than silently drawing the other list.
+func TestDefaultOrder(t *testing.T) {
+	if got := loadConfig().Order; got != defaultOrder {
+		t.Fatalf("empty config = %q, want %q", got, defaultOrder)
+	}
+	writeConfig(t, "default_order: priority\n")
+	if got := loadConfig().Order; got != orderPriority {
+		t.Fatalf("default_order: priority = %q, want priority", got)
+	}
+	writeConfig(t, "default_order: Priority\n")
+	if got := loadConfig().Order; got != orderPriority {
+		t.Fatalf("default_order: Priority = %q, want the value lowercased", got)
+	}
+	writeConfig(t, "default_order: sideways\n")
+	cfg := loadConfig()
+	if cfg.Order != defaultOrder {
+		t.Fatalf("default_order: sideways = %q, want the default", cfg.Order)
+	}
+	if len(cfg.Warnings) == 0 {
+		t.Fatal("default_order: sideways kept the default without saying so")
+	}
+}

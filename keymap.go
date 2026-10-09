@@ -119,6 +119,8 @@ var keyActions = []keyAction{
 		help: "cycle placement: tab, its own window, new pane, the picker's own pane, or ask"},
 	{name: "list.store_cycle", context: keyContextList, chords: []string{"ctrl+b"},
 		help: "cycle the store a new chat uses, over the stores this target has"},
+	{name: "list.order_cycle", context: keyContextList, chords: []string{"ctrl+o"},
+		help: "cycle the list order: the project groups, or everything by what needs you"},
 	{name: "list.preview_toggle", context: keyContextList, chords: []string{"ctrl+v"},
 		help: "show or hide the preview pane"},
 	{name: "list.group_toggle", context: keyContextList, chords: []string{"tab"},
