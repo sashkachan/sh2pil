@@ -291,7 +291,7 @@ func TestTheStateClockIsOffWhenTheSettingIsZero(t *testing.T) {
 // because it changes on a clock, and the full read only now and then, because ownership does not.
 func TestATickReadsTheStateCheaplyAndLivenessSometimes(t *testing.T) {
 	helperDir := t.TempDir()
-	fakeHelper(t, helperDir, "pib-open", stateHelperScript)
+	fakeHelper(t, helperDir, "sh2pil-open", stateHelperScript)
 	m := &model{helperDir: helperDir, statePoll: 0.001, view: viewSessions, width: 120, height: 20,
 		live:  map[string]liveInfo{"ses_1": {ID: "ses_1", Certain: true}},
 		cache: map[string]preview{}, expanded: map[string]bool{},
@@ -321,7 +321,7 @@ func TestATickReadsTheStateCheaplyAndLivenessSometimes(t *testing.T) {
 // asks for a connection is a YubiKey touch nobody asked for, so an unconnected host is skipped.
 func TestATickReadsThisMachineAndEachConnectedHost(t *testing.T) {
 	helperDir := t.TempDir()
-	fakeHelper(t, helperDir, "pib-open", stateHelperScript)
+	fakeHelper(t, helperDir, "sh2pil-open", stateHelperScript)
 	host := target{Server: "build-host"}
 	// The host's answer carries one chat it reports as running: a host with none has nothing to
 	// decorate, so the clock leaves it alone.

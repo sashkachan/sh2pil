@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// session mirrors one row of `pib list --json`, and the picker's project and zmx rows are
+// session mirrors one row of `sh2pil-sessions list --json`, and the picker's project and zmx rows are
 // built on it too: a project has ProjectOnly set, a zmx session has ZmxOnly set, and a
 // session has neither.
 type session struct {
@@ -28,7 +28,7 @@ type session struct {
 	Mod     float64 `json:"modified"`
 	File    string  `json:"file"`
 	// Live is the answer a remote host gives about its own pi processes.  A local row leaves
-	// it false and is marked from `pib-open live` instead, because that also says which window
+	// it false and is marked from `sh2pil-open live` instead, because that also says which window
 	// shows the session.
 	Live bool `json:"live"`
 	// ProjectOnly marks a project row.  In the grouped list that row is a group header, and
@@ -52,7 +52,7 @@ type session struct {
 	Command string
 }
 
-// zmxSession mirrors one entry of `pib-open zmx-list --json`: a live zmx session, the chat
+// zmxSession mirrors one entry of `sh2pil-open zmx-list --json`: a live zmx session, the chat
 // its `pi=` label points at, and where that chat's transcript is.  A remote entry carries the
 // label but no chat: the picker names it from the session list it read from the same host.
 type zmxSession struct {
@@ -68,7 +68,7 @@ type zmxSession struct {
 	Current bool    `json:"current"`
 }
 
-// liveInfo mirrors one entry of `pib-open live --json`: a running pi process that may own
+// liveInfo mirrors one entry of `sh2pil-open live --json`: a running pi process that may own
 // the session, with the evidence the helper found.
 //
 // State is what the chat is doing, and it is the one part of this that a record written by an
@@ -106,7 +106,7 @@ func (l liveInfo) pids() string {
 
 type preview struct {
 	id     string
-	source []string // the markdown as it came from pib
+	source []string // the markdown as it came from sh2pil-sessions
 	lines  []string // rendered: styled markdown, or the source when rendering is off
 	width  int      // the word wrap these lines were rendered for
 	scroll int
@@ -376,9 +376,9 @@ func (m model) loadTarget(t target) tea.Cmd {
 // readProjects reads one target's project directories.  Both sides answer the same zoxide
 // query, so a host without zoxide answers with no projects and its sessions still group.
 func (m model) readProjects(t target) ([]session, string) {
-	helper, args := "pib", []string{"projects", "--json"}
+	helper, args := "sh2pil-sessions", []string{"projects", "--json"}
 	if !t.local() {
-		helper, args = "pib-open", []string{"zmx-remote-projects", t.Server, "--json"}
+		helper, args = "sh2pil-open", []string{"zmx-remote-projects", t.Server, "--json"}
 	}
 	out, err := m.helper(helper, args...).Output()
 	if err != nil {
@@ -411,9 +411,9 @@ func (m model) readSessions(t target) ([]session, string) {
 	var out []byte
 	var err error
 	if t.local() {
-		out, err = m.helper("pib", "list", "--json", "--harness", stores).Output()
+		out, err = m.helper("sh2pil-sessions", "list", "--json", "--harness", stores).Output()
 	} else {
-		out, err = m.helper("pib-open", "session-remote-list", t.Server,
+		out, err = m.helper("sh2pil-open", "session-remote-list", t.Server,
 			"--harness", stores, "--live", "--json").Output()
 	}
 	if err != nil {
@@ -438,9 +438,9 @@ func (m model) readHarnessPresence(t target) []harnessInfo {
 	var out []byte
 	var err error
 	if t.local() {
-		out, err = m.helper("pib", "harnesses", "--json").Output()
+		out, err = m.helper("sh2pil-sessions", "harnesses", "--json").Output()
 	} else {
-		out, err = m.helper("pib-open", "harnesses-remote", t.Server, "--json").Output()
+		out, err = m.helper("sh2pil-open", "harnesses-remote", t.Server, "--json").Output()
 	}
 	if err != nil {
 		return nil
@@ -459,21 +459,21 @@ func (m model) readZmx(t target, rowsByID map[string]session) ([]session, map[st
 	var out []byte
 	var err error
 	if t.local() {
-		out, err = m.helper("pib-open", "zmx-list", "--json").Output()
+		out, err = m.helper("sh2pil-open", "zmx-list", "--json").Output()
 	} else {
-		out, err = m.helper("pib-open", "zmx-remote-list", t.Server, "--json").Output()
+		out, err = m.helper("sh2pil-open", "zmx-remote-list", t.Server, "--json").Output()
 	}
 	if err != nil {
 		if t.local() {
 			// A machine without zmx answers with no rows, and says nothing about it.
-			return nil, nil, "the zmx list needs pib-open zmx-list"
+			return nil, nil, "the zmx list needs sh2pil-open zmx-list"
 		}
 		return nil, nil, t.label() + " zmx: " + remoteFailure(err)
 	}
 	var entries []zmxSession
 	if err := json.Unmarshal(out, &entries); err != nil {
 		if t.local() {
-			return nil, nil, "pib-open zmx-list returned data this UI cannot read"
+			return nil, nil, "sh2pil-open zmx-list returned data this UI cannot read"
 		}
 		return nil, nil, t.label() + " returned unreadable zmx data"
 	}
@@ -578,7 +578,7 @@ func (m model) checkMaster(t target) tea.Cmd {
 	label := t.label()
 	return func() tea.Msg {
 		// --check exits 0 when the master exists and 1 when it does not.
-		err := m.helper("pib-open", "zmx-connect", "--check", t.Server).Run()
+		err := m.helper("sh2pil-open", "zmx-connect", "--check", t.Server).Run()
 		return sshCheckMsg{label: label, server: t.Server, present: err == nil}
 	}
 }
@@ -588,7 +588,7 @@ func (m model) checkMaster(t target) tea.Cmd {
 // so one suspension covers every attempt and the reader sees each one as it happens.
 func (m model) connectMaster(t target) tea.Cmd {
 	label := t.label()
-	command := m.helper("pib-open", "zmx-connect", "--no-wait", t.Server)
+	command := m.helper("sh2pil-open", "zmx-connect", "--no-wait", t.Server)
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return connectMsg{label: label, err: err}
 	})
@@ -599,7 +599,7 @@ func (m model) connectMaster(t target) tea.Cmd {
 // connectMaster: ctrl+r reconnects only when the master is gone, this rebuilds it either way.
 func (m model) reconnectMaster(t target) tea.Cmd {
 	label := t.label()
-	command := m.helper("pib-open", "zmx-connect", "--restart", "--no-wait", t.Server)
+	command := m.helper("sh2pil-open", "zmx-connect", "--restart", "--no-wait", t.Server)
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return connectMsg{label: label, err: err}
 	})
@@ -615,7 +615,7 @@ func (m model) refreshTarget(t target) tea.Cmd {
 }
 
 // harnessOf names the store a row comes from.  A row that does not say is a Pi session:
-// Pi was the only store before OpenCode joined it, and pib writes the field on every row it
+// Pi was the only store before OpenCode joined it, and sh2pil-sessions writes the field on every row it
 // produces.
 func harnessOf(s session) string {
 	if s.Harness == "" {
@@ -716,9 +716,9 @@ func zmxChats(entries []zmxSession) map[string]string {
 
 func (m model) loadLive() tea.Cmd {
 	return func() tea.Msg {
-		out, err := m.helper("pib-open", "live", "--json").Output()
+		out, err := m.helper("sh2pil-open", "live", "--json").Output()
 		if err != nil {
-			// The guard inside pib-open still asks, so a failure here only costs the
+			// The guard inside sh2pil-open still asks, so a failure here only costs the
 			// marker and the early warning.
 			return liveMsg{map[string]liveInfo{}}
 		}
@@ -740,7 +740,7 @@ func (m model) loadLive() tea.Cmd {
 // are already on screen.
 func (m model) loadState() tea.Cmd {
 	return func() tea.Msg {
-		out, err := m.helper("pib-open", "state", "--json").Output()
+		out, err := m.helper("sh2pil-open", "state", "--json").Output()
 		if err != nil {
 			return stateMsg{map[string]liveInfo{}}
 		}
@@ -771,7 +771,7 @@ func (m *model) stateTick() tea.Cmd {
 func (m model) loadRemoteState(host target) tea.Cmd {
 	server := host.Server
 	return func() tea.Msg {
-		out, err := m.helper("pib-open", "state-remote", server, "--json").Output()
+		out, err := m.helper("sh2pil-open", "state-remote", server, "--json").Output()
 		if err != nil {
 			return remoteStateMsg{server: server}
 		}
@@ -823,13 +823,13 @@ func (m model) fetchProjectFiles(path string) tea.Cmd {
 // screenfuls, so the reader can scroll back, and cheap enough to re-read after every move.
 const zmxHistoryLines = 200
 
-// fetchZmxHistory reads the end of a session's own scrollback through pib-open, which is the
+// fetchZmxHistory reads the end of a session's own scrollback through sh2pil-open, which is the
 // only place that knows where zmx lives: a kitty child's PATH does not hold it.
 //
 // This runs in a goroutine, so the subprocess stays off the UI path.
 func (m model) fetchZmxHistory(name string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := m.helper("pib-open", "zmx-history", name,
+		out, err := m.helper("sh2pil-open", "zmx-history", name,
 			"--lines", strconv.Itoa(zmxHistoryLines)).Output()
 		if err != nil {
 			return zmxHistoryMsg{name: name, err: err.Error()}
@@ -844,8 +844,8 @@ func (m model) fetchZmxHistory(name string) tea.Cmd {
 
 // previewCommand is the read that fills the preview pane for one row.  A remote transcript is
 // read on the host that holds it, through the same reader the f4 binding uses, and a local
-// OpenCode or Claude Code one through the local pib, which is the same helper with a server in
-// front of it; only a local Pi transcript is read straight from pi-last, which is the fastest
+// OpenCode or Claude Code one through the local sh2pil-sessions, which is the same helper with a server in
+// front of it; only a local Pi transcript is read straight from sh2pil-last, which is the fastest
 // path and the one the preview pane uses most.
 func (m model) previewCommand(s session) *exec.Cmd {
 	if s.Server != "" {
@@ -854,17 +854,17 @@ func (m model) previewCommand(s session) *exec.Cmd {
 		if s.File != "" && harnessOf(s) == "pi" {
 			// The path the host reported keeps a Pi read to one transcript instead of a scan
 			// of its whole store, which is what the local preview does too.  The other
-			// stores read through their own `pib show`, so the path would not help there.
+			// stores read through their own `sh2pil-sessions show`, so the path would not help there.
 			args = append(args, "--file", s.File)
 		}
-		return m.helper("pib-open", args...)
+		return m.helper("sh2pil-open", args...)
 	}
 	if harnessOf(s) != "pi" {
-		return m.helper("pib", "show", "--harness", harnessOf(s), s.ID,
+		return m.helper("sh2pil-sessions", "show", "--harness", harnessOf(s), s.ID,
 			"--tail", strconv.Itoa(previewLines))
 	}
 	return exec.Command(m.interpreter(),
-		filepath.Join(m.helperDir, "pi-last"), "--session", s.File, "--full",
+		filepath.Join(m.helperDir, "sh2pil-last"), "--session", s.File, "--full",
 		"--tail", strconv.Itoa(previewLines))
 }
 
@@ -875,7 +875,7 @@ func (m model) previewCommand(s session) *exec.Cmd {
 // path; only a resize re-renders inline, because then the word wrap changes.
 func (m model) fetchPreview(s session) tea.Cmd {
 	// The preview wants a rendered tail and nothing else, so the read goes straight to the
-	// store that holds the transcript: pi-last for a local Pi chat, and `pib show` for the
+	// store that holds the transcript: sh2pil-last for a local Pi chat, and `sh2pil-sessions show` for the
 	// two stores that are not a local file.
 	width := m.previewWidth() - 1
 	command := m.previewCommand(s)

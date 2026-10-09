@@ -1,11 +1,11 @@
-"""Tests for `pib prune`: which sessions an age selects, and what it refuses to remove.
+"""Tests for `sh2pil-sessions prune`: which sessions an age selects, and what it refuses to remove.
 
 The age is the only criterion the command has, so these tests pin the boundary, the two
 kinds of session that stop their own delete (a running Pi chat, and an OpenCode row whose
 store removes its own), and the promise that nothing is deleted without --yes.
 
-The helper is loaded from its source path, so the tests run against the file chezmoi
-manages rather than an installed copy.
+The helper is loaded from its source path, so the tests run against the file in this
+repository rather than an installed copy.
 """
 import contextlib
 import importlib.machinery
@@ -20,17 +20,17 @@ import time
 import unittest
 from unittest.mock import patch
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'pib'
-# Loading the helper from its source path writes a bytecode cache beside it, which would land
-# in the chezmoi source tree and be picked up there as a managed file.  Compile nothing.
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'sh2pil-sessions'
+# Loading the helper from its source path writes a bytecode cache beside it, which would land in
+# the working tree as an untracked directory.  Compile nothing.
 sys.dont_write_bytecode = True
-loader = importlib.machinery.SourceFileLoader('pib', str(SCRIPT))
+loader = importlib.machinery.SourceFileLoader('sh2pil_sessions', str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
-pib = importlib.util.module_from_spec(spec)
+sessions = importlib.util.module_from_spec(spec)
 # The module is registered before it runs, because a dataclass at module level looks itself
 # up in sys.modules while the module is still loading.
-sys.modules[loader.name] = pib
-loader.exec_module(pib)
+sys.modules[loader.name] = sessions
+loader.exec_module(sessions)
 
 
 class AgeGrammarTest(unittest.TestCase):
@@ -49,7 +49,7 @@ class AgeGrammarTest(unittest.TestCase):
         }
         for field, want in cases.items():
             with self.subTest(field=field):
-                self.assertEqual(pib.parse_age(field), want)
+                self.assertEqual(sessions.parse_age(field), want)
 
     def test_a_number_with_no_unit_is_refused(self):
         # `7` must never be read as a week or as seven seconds: the guess would be wrong in
@@ -57,7 +57,7 @@ class AgeGrammarTest(unittest.TestCase):
         for field in ('', '   ', '7', 'd', '1x', '1d3', '-1d', '0d'):
             with self.subTest(field=field):
                 with self.assertRaises(ValueError):
-                    pib.parse_age(field)
+                    sessions.parse_age(field)
 
 
 class PruneTest(unittest.TestCase):
@@ -73,7 +73,7 @@ class PruneTest(unittest.TestCase):
         self.patch('codex_sessions_dir', self.home / 'no-codex-store')
 
     def patch(self, name, value):
-        patcher = patch.object(pib, name, return_value=value)
+        patcher = patch.object(sessions, name, return_value=value)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -90,7 +90,7 @@ class PruneTest(unittest.TestCase):
     def run_prune(self, *arguments):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = pib.main(['prune', '--harness', 'pi', '--sessions-dir', str(self.store),
+            code = sessions.main(['prune', '--harness', 'pi', '--sessions-dir', str(self.store),
                              *arguments])
         return code, out.getvalue(), err.getvalue()
 
@@ -148,7 +148,7 @@ class PruneTest(unittest.TestCase):
     def test_a_store_that_removes_its_own_rows_is_left_alone(self):
         # OpenCode keeps its sessions in its own database, so its own command line is the
         # only thing that removes one.  A prune says so instead of failing row by row.
-        row = pib.Session(path=self.home / 'opencode.jsonl', cwd='/project', name='',
+        row = sessions.Session(path=self.home / 'opencode.jsonl', cwd='/project', name='',
                           size=0, mtime=time.time() - 10 * 86400, harness='opencode',
                           identifier='oc')
         self.patch('read_store', ([row], ''))
@@ -186,14 +186,14 @@ class PruneZmxTest(unittest.TestCase):
         self.patch('codex_sessions_dir', self.home / 'no-codex-store')
 
     def patch(self, name, value):
-        patcher = patch.object(pib, name, return_value=value)
+        patcher = patch.object(sessions, name, return_value=value)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def run_prune(self, *arguments):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = pib.main(['prune', '--harness', 'pi', '--sessions-dir', str(self.store),
+            code = sessions.main(['prune', '--harness', 'pi', '--sessions-dir', str(self.store),
                              *arguments])
         return code, out.getvalue(), err.getvalue()
 
@@ -205,7 +205,7 @@ class PruneZmxTest(unittest.TestCase):
         aged = [self.entry('pi-old', 3 * 86400), self.entry('pi-older', 9 * 86400)]
         killed = []
         self.patch('zmx_aged', (aged, ''))
-        with patch.object(pib, 'zmx_kill',
+        with patch.object(sessions, 'zmx_kill',
                           side_effect=lambda name: killed.append(name) or True):
             _code, out, _err = self.run_prune('--older-than', '1d', '--zmx', '--json')
             payload = json.loads(out)
@@ -222,7 +222,7 @@ class PruneZmxTest(unittest.TestCase):
         fake = self.entry('pi-old', 3 * 86400)
         self.patch('zmx_aged', ([fake], ''))
         killed = []
-        with patch.object(pib, 'zmx_kill',
+        with patch.object(sessions, 'zmx_kill',
                           side_effect=lambda name: killed.append(name) or True):
             _code, out, _err = self.run_prune('--older-than', '1d', '--json', '--yes')
         self.assertEqual(json.loads(out)['zmx'], [])

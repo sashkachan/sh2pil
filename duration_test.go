@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// TestParseAgeAcceptsTheWrittenForms pins the grammar the reader types and pib parses.
+// TestParseAgeAcceptsTheWrittenForms pins the grammar the reader types and sh2pil-sessions parses.
 func TestParseAgeAcceptsTheWrittenForms(t *testing.T) {
 	cases := []struct {
 		field string

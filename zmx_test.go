@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// zmxRow is one picker row built from `pib-open zmx-list --json`.
+// zmxRow is one picker row built from `sh2pil-open zmx-list --json`.
 func zmxRow() session {
 	return session{
 		ID: "01a10260", Harness: "pi", Name: "Fix ingress docs", Project: "home-infra",
@@ -496,8 +496,8 @@ func TestZmxScrollbackIgnoresALateRead(t *testing.T) {
 
 func TestZmxViewReportsWhyTheListIsEmpty(t *testing.T) {
 	m := model{view: viewZmx, width: 80, data: map[string]targetData{"local": {
-		Loaded: true, Target: target{}, Note: "the zmx list needs pib-open zmx-list"}}}
-	if got := ansi.Strip(m.zmxView()); !strings.Contains(got, "needs pib-open zmx-list") {
+		Loaded: true, Target: target{}, Note: "the zmx list needs sh2pil-open zmx-list"}}}
+	if got := ansi.Strip(m.zmxView()); !strings.Contains(got, "needs sh2pil-open zmx-list") {
 		t.Fatalf("empty zmx list = %q, want the helper's note", got)
 	}
 	m.data["local"] = targetData{Loaded: true, Target: target{}}
@@ -542,7 +542,7 @@ func TestZmxCtrlWKillsTheSessionFromTheKeyboard(t *testing.T) {
 }
 
 // A zmx session whose `pi=` label never arrived has no chat, so there is nothing to rename or
-// fork: the keys say so instead of running pib and pi against an empty session id.
+// fork: the keys say so instead of running sh2pil-sessions and pi against an empty session id.
 func TestZmxRowWithNoChatRefusesRenameAndFork(t *testing.T) {
 	bare := session{ZmxOnly: true, ZmxName: "shell", CWD: "/tmp"}
 	for _, key := range []tea.KeyType{tea.KeyCtrlE, tea.KeyCtrlF} {

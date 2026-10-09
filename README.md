@@ -7,9 +7,9 @@ opens a new one.
 
 It is the Bubble Tea UI that a terminal key binding opens. Kitty's `Cmd+B` is the usual one.
 
-The picker owns no store logic. It reads its rows and transcripts from the `pib` helper, and
+The picker owns no store logic. It reads its rows and transcripts from the `sh2pil-sessions` helper, and
 every terminal action — resume, new, fork, a shell, an editor, a zmx session — from the
-`pib-open` helper. Both are small Python programs that live in [`helpers/`](helpers/) and are
+`sh2pil-open` helper. Both are small Python programs that live in [`helpers/`](helpers/) and are
 installed beside the binary by the Homebrew formula.
 
 ## Install
@@ -19,7 +19,7 @@ brew tap sashkachan/tap
 brew install sh2pil
 ```
 
-The formula installs `sh2pil` and its three helpers — `pib`, `pib-open`, and `pi-last` — into
+The formula installs `sh2pil` and its three helpers — `sh2pil-sessions`, `sh2pil-open`, and `sh2pil-last` — into
 the same `bin` directory, because the picker runs the helpers it finds beside its own binary.
 
 Requirements:
@@ -44,7 +44,7 @@ sh2pil --check-config     # print the effective settings and keybindings
 sh2pil --print-config     # print the effective settings only
 ```
 
-`--config <file>`, or `PIB_CONFIG`, reads a different main file. `SH2PIL_PYTHON` selects the
+`--config <file>`, or `SH2PIL_CONFIG`, reads a different main file. `SH2PIL_PYTHON` selects the
 interpreter the helpers run under.
 
 ## Terminal integration
@@ -94,9 +94,9 @@ repository when the `TAP_TOKEN` secret is set.
 | Path | What it is |
 |---|---|
 | `*.go` | the picker, a single `main` package |
-| `helpers/pib` | session stores, the command line, and the shared actions |
-| `helpers/pib-open` | terminals, zmx, and the remote verbs |
-| `helpers/pi-last` | render one transcript |
+| `helpers/sh2pil-sessions` | session stores, the command line, and the shared actions |
+| `helpers/sh2pil-open` | terminals, zmx, and the remote verbs |
+| `helpers/sh2pil-last` | render one transcript |
 | `helpers/tests/` | unit tests for the helpers, run against the sources |
 | `config.example.yaml` | a commented reference configuration |
 

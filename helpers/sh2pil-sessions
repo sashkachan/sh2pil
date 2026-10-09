@@ -3,25 +3,25 @@
 copy its resume command.
 
 Usage:
-    pib list [--harness pi|opencode|claude|codex|all] [--json] [--project NAME] [--named]
-    pib show ID [--harness pi|opencode|claude|codex] [--tail N] [--nvim PATH]
-    pib copy ID [--harness pi|opencode|claude|codex]
-    pib last [--window ID] [--harness pi|claude|codex] [--full] [--nvim PATH]
-    pib projects [--json]
-    pib harnesses [--json]
-    pib rename ID NAME [--sessions-dir DIR]
-    pib delete ID [--force] [--sessions-dir DIR]
-    pib prune --older-than AGE [--harness SET] [--zmx] [--yes] [--json]
+    sh2pil-sessions list [--harness pi|opencode|claude|codex|all] [--json] [--project NAME] [--named]
+    sh2pil-sessions show ID [--harness pi|opencode|claude|codex] [--tail N] [--nvim PATH]
+    sh2pil-sessions copy ID [--harness pi|opencode|claude|codex]
+    sh2pil-sessions last [--window ID] [--harness pi|claude|codex] [--full] [--nvim PATH]
+    sh2pil-sessions projects [--json]
+    sh2pil-sessions harnesses [--json]
+    sh2pil-sessions rename ID NAME [--sessions-dir DIR]
+    sh2pil-sessions delete ID [--force] [--sessions-dir DIR]
+    sh2pil-sessions prune --older-than AGE [--harness SET] [--zmx] [--yes] [--json]
 
 Proof of concept for the session browser planned in
 ~/personal/plans/pi-terminal-browser.  It reads and lists without changing anything, and
-`pib delete` is the one key that writes: it removes the transcript, which is what the reader
+`sh2pil-sessions delete` is the one key that writes: it removes the transcript, which is what the reader
 asked the picker's ctrl+w to do.  A running pi process is never touched, and only its own
 `--force` deletes a transcript a live process is still writing.  Actions that open a terminal
-or start pi are handed to `pib-open`, which knows kitty, tmux, and the plain fallback.
+or start pi are handed to `sh2pil-open`, which knows kitty, tmux, and the plain fallback.
 
 The picker is `sh2pil`, the Bubble Tea UI in a kitty overlay: it reads its rows from
-`pib list --json` and its actions from `pib-open`.  The fzf front end this script grew
+`sh2pil-sessions list --json` and its actions from `sh2pil-open`.  The fzf front end this script grew
 from is gone.  What stays here is the store, the command line, and every action that
 must behave the same wherever it is invoked.
 
@@ -31,9 +31,9 @@ come from its `opencode db` session table. Claude Code rows come from its own tr
 its rollout files at ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl, named after the
 first prompt the reader typed. `--harness` selects one store and defaults to pi; `list` also
 takes a comma-separated set of stores, or `all`, so one call can read every store at once.
-`pib harnesses` answers which stores this machine has, which is how a caller tells a store
+`sh2pil-sessions harnesses` answers which stores this machine has, which is how a caller tells a store
 that is absent from a store that holds no sessions.
-`pib list` writes one aligned row per session, with the id behind a tab; `--json` is the
+`sh2pil-sessions list` writes one aligned row per session, with the id behind a tab; `--json` is the
 machine-readable form for other tools:
 
     live ● | age | name | project | size <TAB> id
@@ -43,20 +43,20 @@ on stderr.  `list --json` prints `[]` and succeeds when there are no rows at all
 that collects rows from many machines is not stopped by a machine that holds none; the reason
 still goes to stderr for a reader.  Without `--json` an empty read keeps its message.
 
-`pib show` runs `pi-last --full`, the helper behind the f4 kitty binding, so a
+`sh2pil-sessions show` runs `sh2pil-last --full`, the helper behind the f4 kitty binding, so a
 session looks the same whether it is read here or opened with f4 in its own
 window.
 
-`pib last` is what the f3 and f4 bindings now call: it reads the session of the kitty window
+`sh2pil-sessions last` is what the f3 and f4 bindings now call: it reads the session of the kitty window
 it is given, whichever store that window runs.  A window whose process names Claude Code or
 Codex is read from that store, and every other window is read as a Pi window, because Pi is
 the one store that publishes the session its window runs: the title names it.  Claude Code
 and Codex publish no such name, so their session is the newest one of that store whose
-recorded directory is the window's, which is the same rule `pi-last` uses when a Pi title
+recorded directory is the window's, which is the same rule `sh2pil-last` uses when a Pi title
 says nothing.  Without `--full` the last assistant message is shown, which is what f3 asks
 for; `--full` is the whole transcript, which is what f4 asks for.
 
-A window that runs a chat on a host the picker reads is read from that host: `pib-open`
+A window that runs a chat on a host the picker reads is read from that host: `sh2pil-open`
 names the host from the window's own ssh process, the store and the session from the one
 command that ssh runs there, and the session of that host the window runs, the transcript
 travels here as the bytes the host stores, and this machine's own reader renders it, so f3
@@ -92,7 +92,7 @@ CODEX_SESSIONS_DIR = pathlib.Path.home() / '.codex/sessions'
 FIELD_SEP = '\t'
 
 # Every store this helper knows, in the order a picker lists them.  A store that is not
-# installed is still known: `pib harnesses` says so, and `list` skips it instead of failing.
+# installed is still known: `sh2pil-sessions harnesses` says so, and `list` skips it instead of failing.
 HARNESSES = ('pi', 'opencode', 'claude', 'codex')
 
 # The name of each store, for the messages a reader sees.
@@ -235,7 +235,7 @@ def read_session(path: pathlib.Path) -> tuple[str, str]:
                     value = entry.get('name')
                     name = value if isinstance(value, str) else ''
     except OSError as error:
-        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+        print(f'sh2pil-sessions: cannot read {path}: {error}', file=sys.stderr)
     return cwd, ' '.join(name.split())
 
 
@@ -449,7 +449,7 @@ def read_claude_session(path: pathlib.Path) -> tuple[str, str]:
                             found = CLAUDE_COMMAND.search(claude_message_text(entry))
                             command = found.group(1).strip() if found else ''
     except OSError as error:
-        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+        print(f'sh2pil-sessions: cannot read {path}: {error}', file=sys.stderr)
     return cwd, ' '.join((custom or generated or prompt or command or path.stem[:8]).split())
 
 
@@ -521,7 +521,7 @@ def read_codex_session(path: pathlib.Path) -> tuple[str, str, str]:
                     if (payload.get('type') == 'message' and payload.get('role') == 'user'):
                         name = ' '.join(codex_message_markdown(payload).split())
     except OSError as error:
-        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+        print(f'sh2pil-sessions: cannot read {path}: {error}', file=sys.stderr)
     return cwd, name, identifier or codex_identifier(path)
 
 
@@ -658,7 +658,7 @@ def fail(message: str) -> int:
     """
     print(message, file=sys.stderr)
     if sys.stdin.isatty():
-        print('pib: press Enter to close', file=sys.stderr)
+        print('sh2pil-sessions: press Enter to close', file=sys.stderr)
         try:
             sys.stdin.readline()
         except (KeyboardInterrupt, OSError):
@@ -689,7 +689,7 @@ def tool_env(name: str) -> dict[str, str]:
     PATH=/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin, so `env node` fails with
     "node: No such file or directory" -- which is how a rename looked like pi refusing to
     work.  The tools sit beside their interpreter in /opt/homebrew/bin, so that directory
-    goes first.  pib-open solves the same problem for the terminals it launches by running
+    goes first.  sh2pil-open solves the same problem for the terminals it launches by running
     them through a login shell; this call is a plain pipe, so it sets the path itself.
     """
     env = dict(os.environ)
@@ -708,9 +708,9 @@ def rename_session(session: Session, name: str, force: bool = False) -> int:
     refuses to open a session whose project directory is gone.
     """
     if session.harness != 'pi':
-        return fail(f'pib: renaming {harness_label(session.harness)} sessions is not supported')
+        return fail(f'sh2pil-sessions: renaming {harness_label(session.harness)} sessions is not supported')
     if not session.alive:
-        return fail(f'pib: {session.cwd or "the project directory"} is gone; pi cannot open '
+        return fail(f'sh2pil-sessions: {session.cwd or "the project directory"} is gone; pi cannot open '
                     'this session to rename it')
     # No live check here on purpose.  The name is written by pi itself over its RPC mode, a
     # record is appended rather than rewritten, and the running process simply keeps the name
@@ -723,15 +723,15 @@ def rename_session(session: Session, name: str, force: bool = False) -> int:
                                  '--offline'], input=request.encode(), capture_output=True,
                                 timeout=90, env=tool_env('pi'))
     except (OSError, subprocess.TimeoutExpired) as error:
-        return fail(f'pib: could not ask pi to rename: {error}')
+        return fail(f'sh2pil-sessions: could not ask pi to rename: {error}')
     if result.returncode != 0:
-        return fail('pib: pi refused the rename: '
+        return fail('sh2pil-sessions: pi refused the rename: '
                     + result.stderr.decode('utf-8', 'replace').strip()[:200])
     print(f'renamed {session.id[:8]} to {name!r}')
     if live:
         # The rename went into the transcript, which the running pi does not read again, so
-        # its terminal would keep the old name.  pib-open knows which terminal that is.
-        note = subprocess.run([sys.executable, str(pib_open()), 'retitle', str(session.path),
+        # its terminal would keep the old name.  sh2pil-open knows which terminal that is.
+        note = subprocess.run([sys.executable, str(sh2pil_open()), 'retitle', str(session.path),
                                '--name', name], capture_output=True)
         if note.returncode == 0:
             print('the tab that runs it now carries that name too', file=sys.stderr)
@@ -750,12 +750,12 @@ def delete_session(session: Session, force: bool = False) -> int:
     writes one transcript per session, and there the reader's own question is the guard.
     """
     if session.harness == 'opencode':
-        return fail('pib: deleting OpenCode sessions is not supported')
+        return fail('sh2pil-sessions: deleting OpenCode sessions is not supported')
     if session.harness == 'pi' and not force and session.id in live_ids():
-        return fail('pib: a pi process is running that session; deleting it would leave that '
+        return fail('sh2pil-sessions: a pi process is running that session; deleting it would leave that '
                     'process writing to a file nobody owns (pass --force to overrule)')
     if not session.path.exists():
-        return fail(f'pib: {session.path} is already gone')
+        return fail(f'sh2pil-sessions: {session.path} is already gone')
     try:
         session.path.unlink()
         if session.harness == 'claude':
@@ -768,10 +768,10 @@ def delete_session(session: Session, force: bool = False) -> int:
             # Codex keeps its own index beside the rollouts, and only the Codex command line
             # can update it.  That command line may be absent or older than the store, so the
             # rollout goes here and the index is left to say what the store says.
-            print('pib: the rollout is gone; Codex\'s own index may still list this id',
+            print('sh2pil-sessions: the rollout is gone; Codex\'s own index may still list this id',
                   file=sys.stderr)
     except OSError as error:
-        return fail(f'pib: could not delete the transcript: {error}')
+        return fail(f'sh2pil-sessions: could not delete the transcript: {error}')
     print(f'deleted {session.id[:8]}: {session.path}', file=sys.stderr)
     return 0
 
@@ -786,14 +786,14 @@ def zmx_aged(seconds: float, now: float) -> tuple[list[dict], str]:
 
     A session the picker itself runs inside is never one of them, and neither is one a
     terminal is attached to: both are in use right now, and the age of a session says
-    nothing about that.  `pib-open` owns the zmx verbs, so it is asked rather than zmx.
+    nothing about that.  `sh2pil-open` owns the zmx verbs, so it is asked rather than zmx.
     """
     try:
-        helper = pib_open()
+        helper = sh2pil_open()
         result = subprocess.run([sys.executable, str(helper), 'zmx-list', '--json'],
                                 capture_output=True)
     except (OSError, SystemExit) as error:
-        # A host without pib-open is not a failure of the transcripts: its zmx sessions are
+        # A host without sh2pil-open is not a failure of the transcripts: its zmx sessions are
         # simply not part of this read, and the reader is told which half was skipped.
         return [], f'cannot read the zmx sessions: {error}'
     if result.returncode != 0:
@@ -815,16 +815,16 @@ def zmx_aged(seconds: float, now: float) -> tuple[list[dict], str]:
 
 
 def zmx_kill(name: str) -> bool:
-    """End one zmx session through pib-open, which owns the zmx verbs."""
+    """End one zmx session through sh2pil-open, which owns the zmx verbs."""
     try:
-        helper = pib_open()
+        helper = sh2pil_open()
         result = subprocess.run([sys.executable, str(helper), 'zmx-kill', name],
                                 capture_output=True)
     except (OSError, SystemExit) as error:
-        print(f'pib: could not end {name}: {error}', file=sys.stderr)
+        print(f'sh2pil-sessions: could not end {name}: {error}', file=sys.stderr)
         return False
     if result.returncode != 0:
-        print('pib: could not end ' + name + ': '
+        print('sh2pil-sessions: could not end ' + name + ': '
               + result.stderr.decode('utf-8', 'replace').strip()[:140], file=sys.stderr)
         return False
     return True
@@ -842,11 +842,11 @@ def prune_command(args: argparse.Namespace) -> int:
     try:
         seconds = parse_age(args.older_than)
     except ValueError as error:
-        return fail(f'pib: {error}')
+        return fail(f'sh2pil-sessions: {error}')
 
     requested = harness_set(args.harness)
     if not requested:
-        return fail(f'pib: unknown harness {args.harness!r}; '
+        return fail(f'sh2pil-sessions: unknown harness {args.harness!r}; '
                     f'expected one of {", ".join(HARNESSES)}')
 
     now = time.time()
@@ -858,7 +858,7 @@ def prune_command(args: argparse.Namespace) -> int:
             continue
         rows.extend(found)
     for harness, reason in failures:
-        print(f'pib: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
+        print(f'sh2pil-sessions: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
 
     # OpenCode keeps its sessions in its own database, and only its own command line removes
     # one.  Its rows are left where they are, and said so once rather than once per row.
@@ -915,19 +915,19 @@ def prune_command(args: argparse.Namespace) -> int:
     sys.stdout.flush()
     counted = f'{len(aged)} transcripts and {len(zmx_rows)} zmx sessions'
     if args.yes:
-        print(f'pib: deleted {deleted_sessions} transcripts and {deleted_zmx} zmx sessions '
+        print(f'sh2pil-sessions: deleted {deleted_sessions} transcripts and {deleted_zmx} zmx sessions '
               f'older than {args.older_than}', file=sys.stderr)
     else:
-        print(f'pib: would delete {counted} older than {args.older_than}; '
+        print(f'sh2pil-sessions: would delete {counted} older than {args.older_than}; '
               'pass --yes to delete', file=sys.stderr)
     if running:
-        print(f'pib: left {len(running)} running session(s) alone; a pi process is still '
+        print(f'sh2pil-sessions: left {len(running)} running session(s) alone; a pi process is still '
               'writing them (pass --force to delete one anyway)', file=sys.stderr)
     if kept_back:
-        print(f'pib: left {len(kept_back)} OpenCode session(s): only OpenCode removes its own',
+        print(f'sh2pil-sessions: left {len(kept_back)} OpenCode session(s): only OpenCode removes its own',
               file=sys.stderr)
     if zmx_note:
-        print(f'pib: {zmx_note}', file=sys.stderr)
+        print(f'sh2pil-sessions: {zmx_note}', file=sys.stderr)
     return 0
 
 
@@ -1037,7 +1037,7 @@ def newest_store_session(harness: str, cwd: str) -> Session | None:
 
     Neither Claude Code nor Codex publishes which session a window runs, so the directory is
     the only thing the window and the store have in common.  A directory with two sessions
-    in one store therefore names the newest of them, which is the rule `pi-last` falls back
+    in one store therefore names the newest of them, which is the rule `sh2pil-last` falls back
     to for a Pi window whose title says nothing.
     """
     if not cwd:
@@ -1069,7 +1069,7 @@ def newest_store_session(harness: str, cwd: str) -> Session | None:
 def last_assistant(lines: list[str]) -> list[str]:
     """Keep the last assistant section of a rendered transcript.
 
-    f3 shows what the assistant said last, which is what `pi-last` answers for a Pi session;
+    f3 shows what the assistant said last, which is what `sh2pil-last` answers for a Pi session;
     for a store rendered here, the same answer is the last section the assistant wrote, with
     the user turn and the tool results that came after it left out.
     """
@@ -1098,48 +1098,48 @@ def empty_reason(requested: list[str], failures: list[tuple[str, str]],
     return 'no sessions found in ' + ', '.join(harness_label(h) for h in requested)
 
 
-def pib_open() -> pathlib.Path:
+def sh2pil_open() -> pathlib.Path:
     """Return the launcher adapter, which turns an action into a terminal."""
-    override = os.environ.get('PIB_OPEN')
+    override = os.environ.get('SH2PIL_OPEN') or os.environ.get('PIB_OPEN')
     if override:
         return pathlib.Path(override)
-    beside = pathlib.Path(__file__).resolve().parent / 'pib-open'
+    beside = pathlib.Path(__file__).resolve().parent / 'sh2pil-open'
     if beside.exists():
         return beside
-    live = pathlib.Path.home() / '.local/bin/pib-open'
+    live = pathlib.Path.home() / '.local/bin/sh2pil-open'
     if live.exists():
         return live
-    found = shutil.which('pib-open')
+    found = shutil.which('sh2pil-open')
     if found:
         return pathlib.Path(found)
-    raise SystemExit('pib: pib-open not found; set PIB_OPEN or add it to PATH')
+    raise SystemExit('sh2pil-sessions: sh2pil-open not found; set SH2PIL_OPEN or add it to PATH')
 
 
-def pi_last() -> pathlib.Path:
+def sh2pil_last() -> pathlib.Path:
     """Return the helper that renders a transcript, the same one the f4 binding uses."""
-    override = os.environ.get('PIB_PI_LAST')
+    override = os.environ.get('SH2PIL_LAST') or os.environ.get('PIB_PI_LAST')
     if override:
         return pathlib.Path(override)
-    beside = pathlib.Path(__file__).resolve().parent / 'pi-last'
+    beside = pathlib.Path(__file__).resolve().parent / 'sh2pil-last'
     if beside.exists():
         return beside
-    live = pathlib.Path.home() / '.local/bin/pi-last'
+    live = pathlib.Path.home() / '.local/bin/sh2pil-last'
     if live.exists():
         return live
-    found = shutil.which('pi-last')
+    found = shutil.which('sh2pil-last')
     if found:
         return pathlib.Path(found)
-    raise SystemExit('pib: pi-last not found; set PIB_PI_LAST or add it to PATH')
+    raise SystemExit('sh2pil-sessions: sh2pil-last not found; set SH2PIL_LAST or add it to PATH')
 
 
 def live_ids() -> set[str]:
-    """Return the sessions that a running pi process may own, according to pib-open.
+    """Return the sessions that a running pi process may own, according to sh2pil-open.
 
-    `pib-open live` validates Pi's process-to-session records. An empty set means no
+    `sh2pil-open live` validates Pi's process-to-session records. An empty set means no
     tracked session was detected; the resume guard also checks untracked processes.
     """
     try:
-        result = subprocess.run([sys.executable, str(pib_open()), 'live', '--json'],
+        result = subprocess.run([sys.executable, str(sh2pil_open()), 'live', '--json'],
                                 capture_output=True)
         return {entry['id'] for entry in json.loads(result.stdout)}
     except (OSError, ValueError, KeyError, SystemExit):
@@ -1149,7 +1149,7 @@ def live_ids() -> set[str]:
 def show(session: Session, nvim: str | None, tail: int | None) -> int:
     """Print one transcript, or open it in nvim the way f4 does.
 
-    A tail is rendered by pi-last, which reads only the end of the transcript and cuts at a
+    A tail is rendered by sh2pil-last, which reads only the end of the transcript and cuts at a
     code fence.  Doing it here meant rendering the whole session to throw most of it away,
     which is what made the preview slow.  A store that is not a Pi transcript is rendered
     here instead, because no helper reads it.
@@ -1160,7 +1160,7 @@ def show(session: Session, nvim: str | None, tail: int | None) -> int:
         return show_claude(session, nvim, tail)
     if session.harness == 'codex':
         return show_codex(session, nvim, tail)
-    command = pi_last_command(session)
+    command = sh2pil_last_command(session)
     if tail:
         command += ['--tail', str(tail)]
     if nvim:
@@ -1181,14 +1181,14 @@ def show_opencode(session: Session, nvim: str | None, tail: int | None) -> int:
                                 capture_output=True, env=tool_env('opencode'),
                                 check=False, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as error:
-        return fail(f'pib: could not export OpenCode session: {error}')
+        return fail(f'sh2pil-sessions: could not export OpenCode session: {error}')
     if result.returncode != 0:
-        return fail('pib: OpenCode export failed: '
+        return fail('sh2pil-sessions: OpenCode export failed: '
                     + result.stderr.decode('utf-8', 'replace').strip()[:200])
     try:
         export = json.loads(result.stdout)
     except ValueError as error:
-        return fail(f'pib: OpenCode returned invalid export JSON: {error}')
+        return fail(f'sh2pil-sessions: OpenCode returned invalid export JSON: {error}')
     lines = []
     for message in export.get('messages', []):
         role = message.get('info', {}).get('role', 'assistant')
@@ -1218,7 +1218,7 @@ def show_claude(session: Session, nvim: str | None, tail: int | None,
     try:
         handle = session.path.open('r', encoding='utf-8', errors='replace')
     except OSError as error:
-        return fail(f'pib: cannot read {session.path}: {error}')
+        return fail(f'sh2pil-sessions: cannot read {session.path}: {error}')
     with handle:
         for line in handle:
             if '"type"' not in line:
@@ -1251,7 +1251,7 @@ def show_codex(session: Session, nvim: str | None, tail: int | None,
     try:
         handle = session.path.open('r', encoding='utf-8', errors='replace')
     except OSError as error:
-        return fail(f'pib: cannot read {session.path}: {error}')
+        return fail(f'sh2pil-sessions: cannot read {session.path}: {error}')
     with handle:
         for line in handle:
             if '"response_item"' not in line:
@@ -1307,14 +1307,14 @@ def write_markdown(lines: list[str], nvim: str | None, tail: int | None) -> int:
     return 0
 
 
-def pi_last_command(session: Session) -> list[str]:
-    """Return the pi-last command for one session, exactly the f4 view.
+def sh2pil_last_command(session: Session) -> list[str]:
+    """Return the sh2pil-last command for one session, exactly the f4 view.
 
-    pi-last is named with this interpreter instead of being run through its
+    sh2pil-last is named with this interpreter instead of being run through its
     shebang: the chezmoi source file does not carry the executable bit, and a
-    child of a key binding gets a minimal PATH where `pi-last` may not resolve.
+    child of a key binding gets a minimal PATH where `sh2pil-last` may not resolve.
     """
-    return [sys.executable, str(pi_last()), '--session', str(session.path), '--full']
+    return [sys.executable, str(sh2pil_last()), '--session', str(session.path), '--full']
 
 
 class RemoteRead(Exception):
@@ -1327,8 +1327,8 @@ def helper_message(stderr: bytes, fallback: str) -> str:
     if not text:
         return fallback
     line = text.splitlines()[0].strip()
-    if line.startswith('pib-open: '):
-        return line[len('pib-open: '):]
+    if line.startswith('sh2pil-open: '):
+        return line[len('sh2pil-open: '):]
     return line
 
 
@@ -1336,7 +1336,7 @@ def remote_window_session(window: str, harness: str) -> dict[str, str] | None:
     """Return the host and the session one window runs, or None when it runs here.
 
     A key binding names a window, and kitty's own facts say nothing about another machine, so
-    the window's own ssh process is what names its host; `pib-open window-session` owns that
+    the window's own ssh process is what names its host; `sh2pil-open window-session` owns that
     read.  A window that runs here, a window kitty does not know, and a window on a host the
     picker does not read all answer with no host, and the local read follows exactly as it did
     before.  Only a host the picker reads has to name a session, and it always does so or says
@@ -1346,7 +1346,7 @@ def remote_window_session(window: str, harness: str) -> dict[str, str] | None:
     if not window:
         return None
     try:
-        result = subprocess.run([sys.executable, str(pib_open()), 'window-session',
+        result = subprocess.run([sys.executable, str(sh2pil_open()), 'window-session',
                                  '--window', window, '--harness', harness, '--json'],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -1372,7 +1372,7 @@ def remote_window_session(window: str, harness: str) -> dict[str, str] | None:
 def fetch_transcript(server: str, path: str) -> bytes:
     """Read one transcript's bytes from the host that holds it, exactly as it is stored."""
     try:
-        result = subprocess.run([sys.executable, str(pib_open()), 'session-remote-file',
+        result = subprocess.run([sys.executable, str(sh2pil_open()), 'session-remote-file',
                                  server, path],
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -1387,16 +1387,16 @@ def fetch_transcript(server: str, path: str) -> bytes:
 def render_remote_session(source: dict[str, str], args: argparse.Namespace) -> int:
     """Show a chat that runs on a host, through the reader this machine already has.
 
-    The bytes arrive as the host stores them, so the local reader renders them: `pi-last` for
+    The bytes arrive as the host stores them, so the local reader renders them: `sh2pil-last` for
     a Pi chat, which is where the folds live, and this helper's own renderer for Claude Code
     and Codex.  The file is a temporary copy for that reader, removed as soon as it returns;
-    `pi-last` is told the host's own path, so the view names the transcript that really holds
+    `sh2pil-last` is told the host's own path, so the view names the transcript that really holds
     the chat rather than a copy that is already gone.
     """
     try:
         data = fetch_transcript(source['host'], source['file'])
     except RemoteRead as error:
-        return fail(f'pib: {error}')
+        return fail(f'sh2pil-sessions: {error}')
     suffix = pathlib.Path(source['file']).suffix or '.jsonl'
     handle = tempfile.NamedTemporaryFile(mode='wb', suffix=suffix, delete=False)
     path = pathlib.Path(handle.name)
@@ -1405,11 +1405,11 @@ def render_remote_session(source: dict[str, str], args: argparse.Namespace) -> i
             handle.write(data)
         if args.print_session:
             # The path the host's own reads use, because that is the transcript this points at.
-            print(f'pib: session {source["host"]}:{source["file"]}', file=sys.stderr)
+            print(f'sh2pil-sessions: session {source["host"]}:{source["file"]}', file=sys.stderr)
         if source['harness'] == 'pi':
             # The copy is read here, but the path a reader is told is the host's own, both in
             # the header of a whole transcript and in the line that says nothing was written.
-            command = [sys.executable, str(pi_last()), '--session', str(path),
+            command = [sys.executable, str(sh2pil_last()), '--session', str(path),
                        '--display-path', source['file']]
             if args.full:
                 command.append('--full')
@@ -1430,7 +1430,7 @@ def last_session(args: argparse.Namespace) -> int:
 
     The window is asked which store it runs, because the three stores are read by different
     code and only the window knows which one is in front of the reader.  A Pi window is read
-    by pi-last, which already resolves a session from a window and is the one reader that can
+    by sh2pil-last, which already resolves a session from a window and is the one reader that can
     do it from the session's own name.  A window that runs its chat on a host the picker
     reads is answered from that host instead, and the store in that answer is the one the
     window's own command line names there, so it can differ from the store guessed here: on a
@@ -1440,36 +1440,36 @@ def last_session(args: argparse.Namespace) -> int:
     facts = window_facts(window) if window else {}
     harness = args.harness or window_harness(facts.get('commands', []))
     if harness not in ('pi', 'claude', 'codex'):
-        return fail(f'pib: unknown harness {harness!r}; expected one of pi, claude, codex')
+        return fail(f'sh2pil-sessions: unknown harness {harness!r}; expected one of pi, claude, codex')
     try:
         remote = remote_window_session(window, harness)
     except RemoteRead as error:
-        return fail(f'pib: {error}')
+        return fail(f'sh2pil-sessions: {error}')
     if remote:
         return render_remote_session(remote, args)
     if harness == 'pi':
-        return run_pi_last(window, args)
+        return run_sh2pil_last(window, args)
     cwd = facts.get('cwd') or os.getcwd()
     session = newest_store_session(harness, cwd)
     if session is None:
-        return fail(f'pib: no {harness_label(harness)} session for {cwd}')
+        return fail(f'sh2pil-sessions: no {harness_label(harness)} session for {cwd}')
     if args.print_session:
-        # The chosen session is told the way pi-last tells it: on stderr, so a reader can
+        # The chosen session is told the way sh2pil-last tells it: on stderr, so a reader can
         # still see the transcript it points at.
-        print(f'pib: session {session.path}', file=sys.stderr)
+        print(f'sh2pil-sessions: session {session.path}', file=sys.stderr)
     if harness == 'claude':
         return show_claude(session, args.nvim, None, last_only=not args.full)
     return show_codex(session, args.nvim, None, last_only=not args.full)
 
 
-def run_pi_last(window: str, args: argparse.Namespace) -> int:
-    """Hand a Pi window to pi-last with the flags this call arrived with.
+def run_sh2pil_last(window: str, args: argparse.Namespace) -> int:
+    """Hand a Pi window to sh2pil-last with the flags this call arrived with.
 
-    pi-last resolves the session from the window itself, and it is asked rather than
+    sh2pil-last resolves the session from the window itself, and it is asked rather than
     reimplemented here because the name Pi publishes in the title is what keeps a second
     session in the same project from being read instead of the one on screen.
     """
-    command = [sys.executable, str(pi_last())]
+    command = [sys.executable, str(sh2pil_last())]
     if window:
         command += ['--window', window]
     if args.full:
@@ -1485,7 +1485,7 @@ def copy_resume(session: Session, want_path: bool = False) -> int:
     """Copy the command that resumes this session, or its transcript path."""
     if want_path:
         if session.harness == 'opencode':
-            return fail('pib: OpenCode sessions do not have transcript paths')
+            return fail('sh2pil-sessions: OpenCode sessions do not have transcript paths')
         line = str(session.path)
     elif session.harness == 'opencode':
         command = f'opencode --session {shlex.quote(session.id)}'
@@ -1511,7 +1511,7 @@ def copy_resume(session: Session, want_path: bool = False) -> int:
     if shutil.which('pbcopy'):
         subprocess.run(['pbcopy'], input=line.encode(), check=False)
     if not session.alive and not want_path:
-        print(f'pib: {session.cwd} no longer exists; resuming from the transcript path',
+        print(f'sh2pil-sessions: {session.cwd} no longer exists; resuming from the transcript path',
               file=sys.stderr)
     return 0
 
@@ -1524,7 +1524,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help='session store: pi, opencode, claude, or codex; list also takes a '
                              'comma-separated set, or all (default: %(default)s)')
     parser = argparse.ArgumentParser(
-        prog='pib', description='Read and act on Pi, OpenCode, Claude Code, and Codex sessions.')
+        prog='sh2pil-sessions', description='Read and act on Pi, OpenCode, Claude Code, and Codex sessions.')
     commands = parser.add_subparsers(dest='command', required=True)
 
     listing = commands.add_parser('list', parents=[common],
@@ -1663,7 +1663,7 @@ def main(argv: list[str]) -> int:
     # or deleted through the store that holds it, and that store is named by the row itself.
     requested = harness_set(args.harness) if args.command == 'list' else [args.harness]
     if not requested:
-        return fail(f'pib: unknown harness {args.harness!r}; '
+        return fail(f'sh2pil-sessions: unknown harness {args.harness!r}; '
                     f'expected one of {", ".join(HARNESSES)}')
     sessions, failures = [], []
     for harness in requested:
@@ -1676,7 +1676,7 @@ def main(argv: list[str]) -> int:
         # A store that is not installed here is not a failed read: the caller asked for
         # several stores and gets the ones this machine has.
         for harness, reason in failures:
-            print(f'pib: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
+            print(f'sh2pil-sessions: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
         sessions.sort(key=lambda session: session.mtime, reverse=True)
     if not sessions:
         reason = empty_reason(requested, failures, args)
@@ -1685,11 +1685,11 @@ def main(argv: list[str]) -> int:
             # answers with no rows instead of stopping the read of that machine.  The reason
             # is still told, on the channel a reader watches rather than the one a caller
             # parses.
-            print(f'pib: {reason}', file=sys.stderr)
+            print(f'sh2pil-sessions: {reason}', file=sys.stderr)
             json.dump([], sys.stdout)
             sys.stdout.write('\n')
             return 0
-        return fail(f'pib: {reason}')
+        return fail(f'sh2pil-sessions: {reason}')
 
     if args.command == 'list':
         rows = sessions
@@ -1714,10 +1714,10 @@ def main(argv: list[str]) -> int:
 
     session, matches = select(sessions, args.id)
     if session is None:
-        print(f'pib: {args.id} matched {len(matches)} sessions', file=sys.stderr)
+        print(f'sh2pil-sessions: {args.id} matched {len(matches)} sessions', file=sys.stderr)
         for candidate in matches[:10]:
             print(f'  {candidate.id}  {candidate.name or "(unnamed)"}', file=sys.stderr)
-        return fail(f'pib: {args.id} did not resolve to one session')
+        return fail(f'sh2pil-sessions: {args.id} did not resolve to one session')
     if args.command == 'copy':
         return copy_resume(session, args.path)
     if args.command == 'rename':
@@ -1731,7 +1731,7 @@ if __name__ == '__main__':
     try:
         code = main(sys.argv[1:])
     except BrokenPipeError:
-        # A reader went away early (pib show | head, or a pager quit).  Point
+        # A reader went away early (sh2pil-sessions show | head, or a pager quit).  Point
         # stdout at /dev/null so the interpreter's final flush cannot raise
         # again, and exit quietly.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

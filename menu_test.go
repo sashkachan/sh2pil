@@ -189,7 +189,7 @@ func TestTheWindowDialogAlwaysAsksWhereTheTerminalGoes(t *testing.T) {
 }
 
 // TestWindowMenuOpensTheMenuAtOnce pins the startup the cmd+. dialog relies on: no read of any
-// list, no poll timer, and the menu already open for the window pib-open resolved.
+// list, no poll timer, and the menu already open for the window sh2pil-open resolved.
 func TestWindowMenuOpensTheMenuAtOnce(t *testing.T) {
 	m := &model{windowMenu: true, out: io.Discard, modal: "",
 		windowRow: windowMenuRow("/tmp/repo", ""),

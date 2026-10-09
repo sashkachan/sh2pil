@@ -1,6 +1,6 @@
-"""Tests for `pi-last`, the renderer behind the f3 and f4 bindings and the picker's preview.
+"""Tests for `sh2pil-last`, the renderer behind the f3 and f4 bindings and the picker's preview.
 
-The helper is loaded from its source path, so the tests run against the file chezmoi manages
+The helper is loaded from its source path, so the tests run against the file in this repository
 rather than an installed copy.
 """
 import importlib.machinery
@@ -11,14 +11,14 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'pi-last'
-# Loading the helper from its source path writes a bytecode cache beside it, which would land
-# in the chezmoi source tree and be picked up there as a managed file.  Compile nothing.
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'sh2pil-last'
+# Loading the helper from its source path writes a bytecode cache beside it, which would land in
+# the working tree as an untracked directory.  Compile nothing.
 sys.dont_write_bytecode = True
-loader = importlib.machinery.SourceFileLoader('pi_last', str(SCRIPT))
+loader = importlib.machinery.SourceFileLoader('sh2pil_last', str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
-pi_last = importlib.util.module_from_spec(spec)
-loader.exec_module(pi_last)
+sh2pil_last = importlib.util.module_from_spec(spec)
+loader.exec_module(sh2pil_last)
 
 
 class DisplayPathTest(unittest.TestCase):
@@ -40,19 +40,19 @@ class DisplayPathTest(unittest.TestCase):
         self.copy.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
 
     def test_the_header_names_the_file_that_was_read_by_default(self):
-        text, count, _ = pi_last.render_full(self.copy)
+        text, count, _ = sh2pil_last.render_full(self.copy)
         self.assertEqual(count, 1)
         self.assertIn(f'- file: {self.copy}', text)
 
     def test_a_display_path_names_the_transcript_the_reader_is_told(self):
-        text, count, _ = pi_last.render_full(self.copy,
+        text, count, _ = sh2pil_last.render_full(self.copy,
                                              '/home/me/.pi/agent/sessions/x/a.jsonl')
         self.assertEqual(count, 1)
         self.assertIn('- file: /home/me/.pi/agent/sessions/x/a.jsonl', text)
         self.assertNotIn(str(self.copy), text)
 
     def test_the_flag_is_accepted_on_the_command_line(self):
-        args = pi_last.parse_args(['--session', str(self.copy), '--full',
+        args = sh2pil_last.parse_args(['--session', str(self.copy), '--full',
                                    '--display-path', '/remote/a.jsonl'])
         self.assertEqual(args.display_path, '/remote/a.jsonl')
         self.assertTrue(args.full)

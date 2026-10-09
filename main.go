@@ -24,6 +24,18 @@ import (
 // back to the usual locations, because a binary built on one machine often runs on another.
 var python3 = "/usr/bin/python3"
 
+// envFirst returns the first environment variable that is set.  The current name is tried
+// first and the name an earlier release used is kept as a fallback, so a machine that still
+// has the older dotfiles keeps working while it is migrated.
+func envFirst(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // version is set at build time with -ldflags -X main.version=<tag>; "dev" for a plain build.
 var version = "dev"
 
@@ -68,7 +80,7 @@ type model struct {
 	harnesses       []string          // the stores every target is read for
 	closeOnNavigate bool
 	// windowMenu marks the cmd+. dialog: the picker was started for one window that
-	// pib-open already resolved, so its menu opens at once, every action asks where it
+	// sh2pil-open already resolved, so its menu opens at once, every action asks where it
 	// goes, and the dialog closes when the action is done.  windowRow is that window.
 	windowMenu bool
 	alwaysAsk  bool
@@ -179,15 +191,15 @@ func main() {
 
 	editor := flag.String("nvim", "", "editor for the transcript action (default: $EDITOR, then nvim)")
 	menu := flag.Bool("menu", false,
-		"open the next-step menu for one window at once, which is what pib-open window-menu asks")
+		"open the next-step menu for one window at once, which is what sh2pil-open window-menu asks")
 	menuCWD := flag.String("menu-cwd", "", "that window's project directory, on the window's own host")
 	menuServer := flag.String("menu-server", "", "that window's SSH destination; empty means this machine")
 	menuStores := flag.String("menu-stores", "",
 		"the stores that window's host reports, comma-separated; empty leaves the setting in force")
 	harness := flag.String("harness", "", "store for a new chat: pi, opencode, claude, or codex (default: remembered choice)")
-	style := flag.String("md-style", os.Getenv("PIB_MD_STYLE"),
+	style := flag.String("md-style", envFirst("SH2PIL_MD_STYLE", "PIB_MD_STYLE"),
 		"glamour style for the preview: dark, light, notty, or a style file (default: match system appearance)")
-	config := flag.String("config", os.Getenv("PIB_CONFIG"),
+	config := flag.String("config", envFirst("SH2PIL_CONFIG", "PIB_CONFIG"),
 		"settings file (default: ~/.config/sh2pil/config.yaml, plus config.d/*.yaml overlays)")
 	checkConfig := flag.Bool("check-config", false,
 		"print the effective configuration and the resolved keybindings, then exit")
@@ -798,7 +810,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = "rename cancelled"
 				return m, nil
 			}
-			// No question for a rename: it appends a record through pi, and pib also
+			// No question for a rename: it appends a record through pi, and sh2pil-sessions also
 			// retitles the tab.  Deleting is the destructive one and keeps its question.
 			return m, m.runPib("renamed to "+trim(name, 40), "rename", session.ID, name)
 		// Emacs editing, inside the field only: the list keeps its own keys.
@@ -854,7 +866,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if server != "" {
 				args = append(args, "--server", server)
 			}
-			return m, m.runHelper("pib-open", "killed "+wanted, args...)
+			return m, m.runHelper("sh2pil-open", "killed "+wanted, args...)
 		case action == "delete-force" || action == "delete":
 			if !confirmed {
 				m.status = "delete cancelled"
@@ -905,7 +917,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if session.Server != "" {
-			// Renaming runs the local pib, which appends to the local store: a session that
+			// Renaming runs the local sh2pil-sessions, which appends to the local store: a session that
 			// lives on another host must be renamed there, not here.
 			m.status = "renaming a session on " + session.Server + " is not supported here"
 			return m, nil
@@ -916,7 +928,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if session.ID == "" {
 			// A zmx session whose `pi=` label never arrived carries no chat, so there is no
-			// transcript to name: renaming would run pib against an empty session id.
+			// transcript to name: renaming would run sh2pil-sessions against an empty session id.
 			m.status = "this zmx session carries no chat; rename acts on a session row"
 			return m, nil
 		}
@@ -1387,8 +1399,8 @@ func (m *model) toggleProjectIgnored() (tea.Model, tea.Cmd) {
 	return m, m.loadTarget(target{})
 }
 
-// deleteCommand is the helper call that removes one transcript: the local pib for a session
-// here, and the host's own pib for a session that lives there, where the id has to be resolved
+// deleteCommand is the helper call that removes one transcript: the local sh2pil-sessions for a session
+// here, and the host's own sh2pil-sessions for a session that lives there, where the id has to be resolved
 // against that host's store.  A running session is carried through as --force, because the
 // question has already been asked and answered.
 func (m *model) deleteCommand(session session) (helper string, args []string, note string) {
@@ -1401,7 +1413,7 @@ func (m *model) deleteCommand(session session) (helper string, args []string, no
 		if session.Live {
 			args = append(args, "--force")
 		}
-		return "pib-open", args, "deleted the transcript on " + session.Server
+		return "sh2pil-open", args, "deleted the transcript on " + session.Server
 	}
 	args = []string{"delete", session.ID}
 	if harnessOf(session) != "pi" {
@@ -1411,7 +1423,7 @@ func (m *model) deleteCommand(session session) (helper string, args []string, no
 	if _, live := m.live[session.ID]; live {
 		args = append(args, "--force")
 	}
-	return "pib", args, "deleted the transcript"
+	return "sh2pil-sessions", args, "deleted the transcript"
 }
 
 // startAction runs one of the action keys, asking first when a pi process may already own
@@ -1535,7 +1547,7 @@ func (m *model) beginAction(name string, session session, force bool) (tea.Model
 		return m.askForEditorTitle(session, force, m.layout)
 	}
 	// Ask only when a new terminal may be needed.  A live session that a terminal already
-	// shows is navigated in place by `pib-open switch`, so its tab, pane, or window is
+	// shows is navigated in place by `sh2pil-open switch`, so its tab, pane, or window is
 	// preserved and there is nothing to choose.  A session with no terminal to switch to --
 	// a chat in a zmx session whose client was closed, or one running where this cannot
 	// reach -- needs a new one, and then the placement question is the reader's only say in
@@ -1555,7 +1567,7 @@ func (m *model) beginAction(name string, session session, force bool) (tea.Model
 }
 
 // shown reports whether a terminal already shows this session, which is what makes a resume
-// a switch instead of a launch.  `pib-open live` answers with the window that holds the
+// a switch instead of a launch.  `sh2pil-open live` answers with the window that holds the
 // session, so an entry with no owner is one nothing shows: the client of a zmx session was
 // closed, or the pi process runs somewhere this cannot reach.
 func (m *model) shown(session session) bool {
@@ -1593,7 +1605,7 @@ func (m *model) openToolMenu() (tea.Model, tea.Cmd) {
 	return m.openToolMenuFor(m.selected())
 }
 
-// openToolMenuFor opens that menu for one row.  The cmd+. dialog passes the row pib-open
+// openToolMenuFor opens that menu for one row.  The cmd+. dialog passes the row sh2pil-open
 // resolved for its window, because that row is not on any list this picker read.
 func (m *model) openToolMenuFor(selected session) (tea.Model, tea.Cmd) {
 	choices := travelChoicesFor(selected)
@@ -1645,7 +1657,7 @@ func (m *model) chooseAgent(index int) (tea.Model, tea.Cmd) {
 	return m.beginAction("new", row, false)
 }
 
-// windowMenuRow turns the target pib-open resolved for one kitty window into the row its
+// windowMenuRow turns the target sh2pil-open resolved for one kitty window into the row its
 // menu acts on.  It is a project row: the menu offers what one can do in a directory, and
 // the actions that open a chat, a tool, or a shell all start from that directory.
 func windowMenuRow(cwd, server string) session {
@@ -1859,19 +1871,19 @@ func (m *model) pruneHelper(age string, deletes bool) (string, []string) {
 		stores = "all"
 	}
 	// The same flags in both places, and only the command in front of them differs: the local
-	// pib is asked for JSON, and pib-open only ever relays the host's JSON, so it takes no such
+	// sh2pil-sessions is asked for JSON, and sh2pil-open only ever relays the host's JSON, so it takes no such
 	// flag and no subcommand word of its own.  One flag list is what keeps the two in step.
 	flags := []string{"--older-than", age, "--harness", stores, "--zmx"}
 	if deletes {
 		flags = append(flags, "--yes")
 	}
 	if server := m.currentTarget().Server; server != "" {
-		return "pib-open", append([]string{"session-remote-prune", server}, flags...)
+		return "sh2pil-open", append([]string{"session-remote-prune", server}, flags...)
 	}
-	return "pib", append([]string{"prune", "--json"}, flags...)
+	return "sh2pil-sessions", append([]string{"prune", "--json"}, flags...)
 }
 
-// pruneCount is what pib prune answers: the selection when it is only read, and the two
+// pruneCount is what sh2pil-sessions prune answers: the selection when it is only read, and the two
 // counts of what was actually removed when it is a delete.
 type pruneCount struct {
 	Sessions        []json.RawMessage `json:"sessions"`
@@ -1904,7 +1916,7 @@ func helperFailure(err error, out []byte) string {
 	return firstLine(err.Error())
 }
 
-// checkPrune asks pib what an age selects, without deleting anything, so the reader is asked
+// checkPrune asks sh2pil-sessions what an age selects, without deleting anything, so the reader is asked
 // about a number instead of a hope.
 func (m *model) checkPrune(age string) tea.Cmd {
 	helper, args := m.pruneHelper(age, false)
@@ -1996,7 +2008,7 @@ func (m *model) copyAction(key string) (tea.Model, tea.Cmd) {
 		if session.Server != "" {
 			args = append(args, "--server", session.Server)
 		}
-		command := m.helper("pib-open", args...)
+		command := m.helper("sh2pil-open", args...)
 		return m, func() tea.Msg {
 			out, err := command.Output()
 			if err != nil {
@@ -2021,7 +2033,7 @@ func (m *model) copyAction(key string) (tea.Model, tea.Cmd) {
 		if session.Alive {
 			args = append(args, "--cwd", session.CWD)
 		}
-		command := m.helper("pib-open", args...)
+		command := m.helper("sh2pil-open", args...)
 		return m, func() tea.Msg {
 			out, err := command.Output()
 			if err != nil {
@@ -2038,7 +2050,7 @@ func (m *model) copyAction(key string) (tea.Model, tea.Cmd) {
 	if key == "alt+y" {
 		args = append(args, "--path")
 	}
-	command := m.helper("pib", args...)
+	command := m.helper("sh2pil-sessions", args...)
 	kind := "resume command"
 	if key == "alt+y" {
 		kind = "transcript path"
@@ -2052,16 +2064,16 @@ func (m *model) copyAction(key string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// runPib runs a pib subcommand off the UI path and reports what it said.
+// runPib runs a sh2pil-sessions subcommand off the UI path and reports what it said.
 //
-// Rename and delete live in pib, not here: they must work the same from the command line and
+// Rename and delete live in sh2pil-sessions, not here: they must work the same from the command line and
 // this UI, and the rules about a running session belong in one place.
 func (m *model) runPib(note string, args ...string) tea.Cmd {
-	return m.runHelper("pib", note, args...)
+	return m.runHelper("sh2pil-sessions", note, args...)
 }
 
 // runHelper runs one subcommand of one helper and reports what it said.  The zmx keys need
-// the same treatment as the session keys, and their verbs live in pib-open.
+// the same treatment as the session keys, and their verbs live in sh2pil-open.
 func (m *model) runHelper(helper, note string, args ...string) tea.Cmd {
 	command := m.helper(helper, args...)
 	mail := note
@@ -2078,7 +2090,7 @@ func (m *model) runHelper(helper, note string, args ...string) tea.Cmd {
 	}
 }
 
-// runAction hands the work to pib-open.  Bubble Tea releases the terminal for the child,
+// runAction hands the work to sh2pil-open.  Bubble Tea releases the terminal for the child,
 // which the editor action needs and the launcher does not mind.
 func (m *model) runAction(name string, session session, force bool) tea.Cmd {
 	args, note := m.openArgs(name, session, force)
@@ -2110,9 +2122,9 @@ func (m *model) runAction(name string, session session, force bool) tea.Cmd {
 			note = "started pi in " + describeLayout(m.layout)
 		}
 	}
-	helper := "pib-open"
+	helper := "sh2pil-open"
 	if name == "editor" && harnessOf(session) != "pi" {
-		helper = "pib"
+		helper = "sh2pil-sessions"
 	}
 	command := m.helper(helper, args...)
 	return tea.ExecProcess(command, func(err error) tea.Msg {
@@ -2157,7 +2169,7 @@ func (m *model) openArgs(action string, session session, force bool) ([]string, 
 }
 
 func (m *model) openArgsFor(action string, session session, force bool) ([]string, string) {
-	// "ask" is a UI preference, not a placement accepted by pib-open. Actions that
+	// "ask" is a UI preference, not a placement accepted by sh2pil-open. Actions that
 	// do not ask (including focusing a live session) use the placement in force.
 	place := m.layout
 	if action == "window" {
@@ -2168,12 +2180,12 @@ func (m *model) openArgsFor(action string, session session, force bool) ([]strin
 		place = defaultLayout
 	}
 	// A remote row names a directory on its own host, so nothing here may replace it with a
-	// local one: pib-open builds the SSH terminal for it instead.
+	// local one: sh2pil-open builds the SSH terminal for it instead.
 	cwd := session.CWD
 	if action != "project-editor" && (!session.Alive || cwd == "") {
 		cwd = os.Getenv("HOME")
 	}
-	// The label is the visible tab title, and pib-open matches a window title against the head
+	// The label is the visible tab title, and sh2pil-open matches a window title against the head
 	// of the session name to find the terminal that already runs a session, so the full name
 	// goes in, untruncated.
 	title := session.Name
@@ -2312,10 +2324,10 @@ func (m *model) openArgsFor(action string, session session, force bool) ([]strin
 				m.forkName = ""
 			}
 		case "window":
-			// Deliberately a second terminal, so no --force: pib-open asks its own question.
+			// Deliberately a second terminal, so no --force: sh2pil-open asks its own question.
 		default:
 			if force {
-				// We asked the question here already, so pib-open must not ask again.
+				// We asked the question here already, so sh2pil-open must not ask again.
 				args = append(args, "--force")
 			}
 		}
@@ -2364,7 +2376,7 @@ func (m *model) openArgsFor(action string, session session, force bool) ([]strin
 	return nil, ""
 }
 
-// remoteOpenArgs is what pib-open needs to run one session action on another host.  Every
+// remoteOpenArgs is what sh2pil-open needs to run one session action on another host.  Every
 // action that opens a chat goes through one verb, so a resume, a fork, a second terminal, and
 // a new chat in the same project differ only in their arguments.  The directory is the remote
 // one as that host recorded it, and an empty one is a project that is gone there: the remote
@@ -2408,10 +2420,10 @@ func (m *model) remoteOpenArgs(action string, s session, place string) ([]string
 	return args, "opened the session on " + s.Server
 }
 
-// remoteShellArgs is what pib-open needs to open a login shell on another host.  The shell
+// remoteShellArgs is what sh2pil-open needs to open a login shell on another host.  The shell
 // starts in the directory that host recorded, so the reader lands where the work is; a
 // directory the host has reported as gone sends an empty one, which means that host's home.
-// The label is left to pib-open, which names the shell and the directory it opens in.
+// The label is left to sh2pil-open, which names the shell and the directory it opens in.
 func (m *model) remoteShellArgs(s session, place string) ([]string, string) {
 	cwd := s.CWD
 	if !s.Alive {
@@ -2425,7 +2437,7 @@ func (m *model) remoteShellArgs(s session, place string) ([]string, string) {
 		"opened a shell in " + project + " on " + s.Server
 }
 
-// remoteEditorArgs is what pib-open needs to open one project on another host in that host's
+// remoteEditorArgs is what sh2pil-open needs to open one project on another host in that host's
 // own editor.  No editor is named: the host's `$EDITOR` is used there, and nvim when it has
 // neither, because an editor is that machine's tool.  The label is the title the reader gave
 // the window, or the same default a local project editor is offered.
@@ -2442,10 +2454,10 @@ func (m *model) remoteEditorArgs(s session, place string) ([]string, string) {
 		"opened the project in the editor on " + s.Server
 }
 
-// remoteToolArgs is what pib-open needs to run one directory tool on another host.  The
+// remoteToolArgs is what sh2pil-open needs to run one directory tool on another host.  The
 // directory is the one that host recorded, and an empty one is a directory the host has
 // reported as gone: the tool then starts in that host's home directory, which is what an empty
-// directory means to the helper.  The label is left to pib-open, which names the tool and the
+// directory means to the helper.  The label is left to sh2pil-open, which names the tool and the
 // directory it opens in, the same way the local verbs are named.
 // runToolArgs is the command that runs a configured directory tool in a terminal.  The tool
 // is a setting, so jj or another file browser works without a code change; the first word is

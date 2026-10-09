@@ -179,21 +179,21 @@ func TestPruneFollowsTheTargetOnScreen(t *testing.T) {
 	if _, cmd := m.startPrune(); cmd != nil || m.modal != "prune" {
 		t.Fatalf("startPrune on a host: modal=%q cmd=%v, want the age field", m.modal, cmd)
 	}
-	// The exact list is pinned, because the two commands are different programs: pib-open's
+	// The exact list is pinned, because the two commands are different programs: sh2pil-open's
 	// session-remote-prune takes no subcommand word and no --json (it only relays the host's
 	// own JSON), and a local token sent to it is refused by argparse before it runs.
 	helper, args := m.pruneHelper("1d", true)
 	wantRemote := []string{"session-remote-prune", "user@192.0.2.15",
 		"--older-than", "1d", "--harness", "pi", "--zmx", "--yes"}
-	if helper != "pib-open" || !reflect.DeepEqual(args, wantRemote) {
-		t.Fatalf("the remote prune is %q %v, want %q %v", helper, args, "pib-open", wantRemote)
+	if helper != "sh2pil-open" || !reflect.DeepEqual(args, wantRemote) {
+		t.Fatalf("the remote prune is %q %v, want %q %v", helper, args, "sh2pil-open", wantRemote)
 	}
 
-	// This machine's own stores are read and deleted by the local pib, which is asked for JSON.
+	// This machine's own stores are read and deleted by the local sh2pil-sessions, which is asked for JSON.
 	wantLocal := []string{"prune", "--json", "--older-than", "1d3h", "--harness", "pi", "--zmx"}
-	if helper, args := (&model{harnesses: []string{"pi"}}).pruneHelper("1d3h", false); helper != "pib" ||
+	if helper, args := (&model{harnesses: []string{"pi"}}).pruneHelper("1d3h", false); helper != "sh2pil-sessions" ||
 		!reflect.DeepEqual(args, wantLocal) {
-		t.Errorf("the local prune is %q %v, want %q %v", helper, args, "pib", wantLocal)
+		t.Errorf("the local prune is %q %v, want %q %v", helper, args, "sh2pil-sessions", wantLocal)
 	}
 }
 

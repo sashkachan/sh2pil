@@ -1,9 +1,9 @@
 // Command sh2pil is the terminal UI for Pi, OpenCode, Claude Code, and Codex sessions, with the
 // tail of the highlighted transcript beside the list. Kitty's Cmd+B binding opens it.
 //
-// It owns no policy. Sessions and transcript text come from `pib`; project directories come
+// It owns no policy. Sessions and transcript text come from `sh2pil-sessions`; project directories come
 // from zoxide's database (the same locations offered by `zi`); the live zmx sessions and every
-// terminal action come from `pib-open`.
+// terminal action come from `sh2pil-open`.
 //
 // One view serves every machine: a grouped list of projects, with each project's sessions
 // under it, for one target at a time. A target is this machine or one configured SSH host, and
@@ -84,7 +84,7 @@
 // over the connection that host already has.  Both halves of a target are counted -- the
 // transcripts of every store the picker reads, and the zmx sessions of the same target -- and
 // each one that is in use is left alone: a chat a pi process is still writing, the zmx session
-// the picker itself runs inside, and a zmx session a terminal is attached to.  `pib prune
+// the picker itself runs inside, and a zmx session a terminal is attached to.  `sh2pil-sessions prune
 // --older-than 1d3h --zmx --yes` is the same thing from the command line, and without `--yes`
 // it only reports what it would delete.
 //
@@ -125,14 +125,14 @@
 // every store this build knows when the key is absent), which target opens first
 // (default_target: local, or one of the zmx_servers destinations), whether the picker closes
 // after a launched action (close_on_navigate, default true), whether a new, resumed, or
-// forked chat runs inside a zmx session of its own (zmx, default false; pib-open opens and
+// forked chat runs inside a zmx session of its own (zmx, default false; sh2pil-open opens and
 // labels that session), how the rows that wait on a person are ranked (attention_sort), and how
 // such a row is announced (notify).
 //
 // Every keybinding is a setting too: `key.<context>.<action>` moves one action, a comma list
 // gives it several chords, and `none` disables it, for example `key.list.fork: alt+p`.
 // `config.d/*.yaml` overlays the main file, in name order, so a machine or a session changes a
-// setting without editing it. `--config` and `PIB_CONFIG` select another file. `--check-config`
+// setting without editing it. `--config` and `SH2PIL_CONFIG` select another file. `--check-config`
 // prints the effective configuration and the bindings in force, and `--print-config` prints the
 // settings alone. The directory tools are settings too: editor, file_browser, and git_tool
 // name the programs the transcript, the alt+f action, and the ctrl+g action run, and a remote
@@ -146,7 +146,7 @@
 // `zmx_servers: host-a, user@computer` to add them to the target bar. A host is asked for its
 // own sessions and its own zoxide projects, which are grouped exactly as the local machine's
 // are, so every key works the same way on either. The host needs nothing installed for a session
-// read: the picker's own `pib` and `pi-last` travel to it when it has no copy, so both ends read
+// read: the picker's own `sh2pil-sessions` and `sh2pil-last` travel to it when it has no copy, so both ends read
 // the store with one version of the code, and no file is written there. A host that does run the
 // dotfiles answers with its own copy and also marks the sessions its pi processes run. A remote
 // row that runs inside a zmx session on that host is reached by attaching to that session: enter

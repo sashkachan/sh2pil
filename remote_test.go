@@ -144,7 +144,7 @@ func TestRemoteRowsThatAreNotSessionsKeepTheirOwnVerbs(t *testing.T) {
 }
 
 // The keys that act on this machine's store or directories must not act on a remote row: the
-// local pib is keyed by session id, and the same id can name a session here.  Every key is sent
+// local sh2pil-sessions is keyed by session id, and the same id can name a session here.  Every key is sent
 // through the keyboard path, which is where a rename starts.  Three keys are no longer among
 // them: the delete reaches the host (TestCtrlWDeletesLocalAndRemoteTranscripts), and a shell,
 // lazygit, and yazi reach it too, because they act on the host's files
@@ -510,8 +510,8 @@ func TestRemoteDirectoryToolKeysReachTheHost(t *testing.T) {
 	}
 }
 
-// Deleting a transcript acts on the store that holds it: the local pib deletes a session here,
-// and a session on another host is deleted there by that host's own pib, which is what resolves
+// Deleting a transcript acts on the store that holds it: the local sh2pil-sessions deletes a session here,
+// and a session on another host is deleted there by that host's own sh2pil-sessions, which is what resolves
 // the id against the sessions that host has.  Both ask first and name what goes.
 func TestCtrlWDeletesLocalAndRemoteTranscripts(t *testing.T) {
 	here := session{ID: "ses_here", Name: "Fix ingress docs", Project: "repo",
@@ -527,8 +527,8 @@ func TestCtrlWDeletesLocalAndRemoteTranscripts(t *testing.T) {
 		t.Fatalf("question = %q, want the session named for deletion", m.status)
 	}
 	helper, args, note := m.deleteCommand(here)
-	if helper != "pib" || !reflect.DeepEqual(args, []string{"delete", here.ID}) {
-		t.Fatalf("local delete = %s %v, want the local pib", helper, args)
+	if helper != "sh2pil-sessions" || !reflect.DeepEqual(args, []string{"delete", here.ID}) {
+		t.Fatalf("local delete = %s %v, want the local sh2pil-sessions", helper, args)
 	}
 	if !strings.Contains(note, "deleted") {
 		t.Fatalf("local delete note = %q, want it named as a delete", note)
@@ -563,7 +563,7 @@ func TestCtrlWDeletesLocalAndRemoteTranscripts(t *testing.T) {
 	}
 	helper, args, note = remote.deleteCommand(row)
 	want := []string{"session-remote-delete", row.Server, row.ID, "--harness", "pi"}
-	if helper != "pib-open" || !reflect.DeepEqual(args, want) {
+	if helper != "sh2pil-open" || !reflect.DeepEqual(args, want) {
 		t.Fatalf("remote delete = %s %v, want %v", helper, args, want)
 	}
 	if !strings.Contains(note, row.Server) {
@@ -706,7 +706,7 @@ func TestRemoteForkTakesTheNameThePromptOffered(t *testing.T) {
 	}
 }
 
-// The preview reads a remote transcript on its own host, through the same `pib show` the
+// The preview reads a remote transcript on its own host, through the same `sh2pil-sessions show` the
 // OpenCode preview uses, and reports the path as the remote one it is.
 func TestRemoteRowPreviewReadsTheTranscriptOnItsHost(t *testing.T) {
 	row := remoteRow()
@@ -790,7 +790,7 @@ func fakeHelper(t *testing.T, directory, name, script string) {
 	}
 }
 
-// localList is what the fake `pib` answers a local read with: one session and the zoxide
+// localList is what the fake `sh2pil-sessions` answers a local read with: one session and the zoxide
 // projects the picker offers beside it.
 const localPibScript = `import json, sys
 if sys.argv[1] == "projects":
@@ -809,7 +809,7 @@ command, server = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ""
 if command == "live":
     print("[]"); sys.exit(0)
 if server == "bad-host":
-    print("pib is not installed on this host (PATH and ~/.local/bin)", file=sys.stderr); sys.exit(127)
+    print("sh2pil-sessions is not installed on this host (PATH and ~/.local/bin)", file=sys.stderr); sys.exit(127)
 if command == "zmx-remote-projects":
     print(json.dumps(["/srv/api"]))
     sys.exit(0)
@@ -836,8 +836,8 @@ func TestRemoteFailureReportsTheLineThatExplainsIt(t *testing.T) {
 	if got := remoteFailure(&exec.ExitError{Stderr: []byte(stderr)}); !strings.Contains(got, "Permission denied") {
 		t.Fatalf("failure = %q, want the line that says why the connection failed", got)
 	}
-	missing := &exec.ExitError{Stderr: []byte("pib is not installed on this host (PATH and ~/.local/bin)\n")}
-	if got := remoteFailure(missing); got != "pib is not installed on this host (PATH and ~/.local/bin)" {
+	missing := &exec.ExitError{Stderr: []byte("sh2pil-sessions is not installed on this host (PATH and ~/.local/bin)\n")}
+	if got := remoteFailure(missing); got != "sh2pil-sessions is not installed on this host (PATH and ~/.local/bin)" {
 		t.Fatalf("failure = %q, want the helper's own line", got)
 	}
 	if got := remoteFailure(errors.New("exit status 1")); got != "exit status 1" {
@@ -863,8 +863,8 @@ func TestLoadTargetReadsOneHost(t *testing.T) {
 		t.Fatalf("write the shared config: %v", err)
 	}
 	helperDir := t.TempDir()
-	fakeHelper(t, helperDir, "pib", localPibScript)
-	fakeHelper(t, helperDir, "pib-open", remotePibOpenScript)
+	fakeHelper(t, helperDir, "sh2pil-sessions", localPibScript)
+	fakeHelper(t, helperDir, "sh2pil-open", remotePibOpenScript)
 
 	m := model{helperDir: helperDir, harness: "pi"}
 	message, ok := m.loadTarget(target{Server: "build-host"})().(targetMsg)
@@ -914,7 +914,7 @@ func TestLoadTargetReadsOneHost(t *testing.T) {
 	if failed.label != "bad-host" || failed.data.Err == "" {
 		t.Fatalf("host that could not answer = %#v, want a failure", failed)
 	}
-	if !strings.Contains(failed.data.Err, "pib is not installed") {
+	if !strings.Contains(failed.data.Err, "sh2pil-sessions is not installed") {
 		t.Fatalf("failure = %q, want the helper's own line", failed.data.Err)
 	}
 }
@@ -929,8 +929,8 @@ func TestLoadTargetReadsThisMachine(t *testing.T) {
 		t.Fatalf("create the settings directory: %v", err)
 	}
 	helperDir := t.TempDir()
-	fakeHelper(t, helperDir, "pib", localPibScript)
-	fakeHelper(t, helperDir, "pib-open", remotePibOpenScript)
+	fakeHelper(t, helperDir, "sh2pil-sessions", localPibScript)
+	fakeHelper(t, helperDir, "sh2pil-open", remotePibOpenScript)
 
 	m := model{helperDir: helperDir, harness: "pi"}
 	message, ok := m.loadTarget(target{})().(targetMsg)

@@ -147,7 +147,7 @@ func wordEnd(r []rune, from int) int {
 }
 
 // wordRune is the word character a shell treats as part of a word, so a name like "sh2pil"
-// moves in two steps ("pib", then "tui") and not in punctuation.
+// moves in two steps ("sh2pil-sessions", then "tui") and not in punctuation.
 func wordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }

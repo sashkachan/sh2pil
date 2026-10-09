@@ -72,11 +72,11 @@ const (
 	viewZmx      = "zmx"      // the live zmx sessions of the same target
 )
 
-// configPathOverride is the file named by --config or PIB_CONFIG.  The test suites and a
+// configPathOverride is the file named by --config or SH2PIL_CONFIG.  The test suites and a
 // second profile use it; when it is empty the shared file is used.
 var configPathOverride string
 
-// configFile is the settings file the picker shares with pib-open.  Each program reads the
+// configFile is the settings file the picker shares with sh2pil-open.  Each program reads the
 // keys it knows and ignores the rest, so one file holds both.
 func configFile() string {
 	if configPathOverride != "" {
@@ -119,7 +119,7 @@ func configChain() []string {
 
 // Config is the effective settings for one run.  Values come from defaults, then the main
 // file, then each overlay, so a later line wins.  Values holds every scalar that was read,
-// including the keys pib-open owns, so inspection can show the whole file.
+// including the keys sh2pil-open owns, so inspection can show the whole file.
 type Config struct {
 	Harnesses       []string
 	DefaultView     string
@@ -146,7 +146,7 @@ type Config struct {
 	KeyErrors []string
 }
 
-// knownConfigKeys is the union of the keys sh2pil and pib-open read from the shared file.
+// knownConfigKeys is the union of the keys sh2pil and sh2pil-open read from the shared file.
 // A key outside it is a warning, not an error: the file is shared, and a newer program may
 // write a key this build does not know yet.
 var knownConfigKeys = map[string]bool{

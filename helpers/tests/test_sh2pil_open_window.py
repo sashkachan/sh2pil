@@ -10,14 +10,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'pib-open'
-# Loading the helper from its source path writes a bytecode cache beside it, which would land
-# in the chezmoi source tree and be picked up there as a managed file.  Compile nothing.
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'sh2pil-open'
+# Loading the helper from its source path writes a bytecode cache beside it, which would land in
+# the working tree as an untracked directory.  Compile nothing.
 sys.dont_write_bytecode = True
-loader = importlib.machinery.SourceFileLoader('pib_open_window', str(SCRIPT))
+loader = importlib.machinery.SourceFileLoader('sh2pil_open_window', str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
-pib_open = importlib.util.module_from_spec(spec)
-loader.exec_module(pib_open)
+sh2pil_open = importlib.util.module_from_spec(spec)
+loader.exec_module(sh2pil_open)
 
 
 def window(commands, cwd='/', title='', identifier='7'):
@@ -37,19 +37,19 @@ class ZmxNameTest(unittest.TestCase):
     def test_a_local_client_names_its_session(self):
         row = window([['env', '-u', 'ZMX_SESSION', 'PIB_ZMX=/opt/homebrew/bin/zmx',
                        '/opt/homebrew/bin/zmx', 'attach', 'pi-abc-1']])
-        self.assertEqual(pib_open.window_zmx_name(row), 'pi-abc-1')
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-abc-1')
 
     def test_a_remote_client_names_its_session_from_the_ssh_command(self):
         row = ssh_window('host', 'env -u ZMX_SESSION PIB_ZMX=/usr/bin/zmx zmx attach feat-2')
-        self.assertEqual(pib_open.window_zmx_name(row), 'feat-2')
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'feat-2')
 
     def test_a_plain_window_names_nothing(self):
-        self.assertEqual(pib_open.window_zmx_name(window([['/bin/zsh']])), '')
-        self.assertEqual(pib_open.window_zmx_name({'commands': []}), '')
+        self.assertEqual(sh2pil_open.window_zmx_name(window([['/bin/zsh']])), '')
+        self.assertEqual(sh2pil_open.window_zmx_name({'commands': []}), '')
 
     def test_the_client_path_is_not_read_as_a_session(self):
         row = window([['env', 'PIB_ZMX=/usr/bin/zmx', '/bin/zsh']])
-        self.assertEqual(pib_open.window_zmx_name(row), '')
+        self.assertEqual(sh2pil_open.window_zmx_name(row), '')
 
 
 class ConfiguredServersTest(unittest.TestCase):
@@ -59,32 +59,32 @@ class ConfiguredServersTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.config = pathlib.Path(self.tmp.name) / 'config.yaml'
-        self.patch = patch.object(pib_open, 'CONFIG', self.config)
+        self.patch = patch.object(sh2pil_open, 'CONFIG', self.config)
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
     def test_commas_and_spaces_both_separate(self):
         self.config.write_text('zmx_servers: user@192.0.2.15, buildbox\n')
-        self.assertEqual(pib_open.configured_servers(),
+        self.assertEqual(sh2pil_open.configured_servers(),
                          ['user@192.0.2.15', 'buildbox'])
 
     def test_no_setting_is_no_host(self):
         self.config.write_text('default_view: sessions\n')
-        self.assertEqual(pib_open.configured_servers(), [])
+        self.assertEqual(sh2pil_open.configured_servers(), [])
 
 
 class WindowTargetTest(unittest.TestCase):
     """The host and project one window's menu applies to, and the refusals."""
 
     def target(self, row, servers=('user@192.0.2.15',), zmx=None, remote=None, stores=None):
-        with patch.object(pib_open, 'kitten_prefix', return_value=['kitten', '@']), \
-                patch.object(pib_open, 'kitty_windows', return_value=[row]), \
-                patch.object(pib_open, 'configured_servers', return_value=list(servers)), \
-                patch.object(pib_open, 'zmx_sessions', return_value=zmx or []), \
-                patch.object(pib_open, 'zmx_remote_sessions', return_value=remote or []), \
-                patch.object(pib_open, 'session_remote_list', return_value=remote or []), \
-                patch.object(pib_open, 'target_stores', return_value=stores or []):
-            return pib_open.window_target(row['target'])
+        with patch.object(sh2pil_open, 'kitten_prefix', return_value=['kitten', '@']), \
+                patch.object(sh2pil_open, 'kitty_windows', return_value=[row]), \
+                patch.object(sh2pil_open, 'configured_servers', return_value=list(servers)), \
+                patch.object(sh2pil_open, 'zmx_sessions', return_value=zmx or []), \
+                patch.object(sh2pil_open, 'zmx_remote_sessions', return_value=remote or []), \
+                patch.object(sh2pil_open, 'session_remote_list', return_value=remote or []), \
+                patch.object(sh2pil_open, 'target_stores', return_value=stores or []):
+            return sh2pil_open.window_target(row['target'])
 
     def test_a_local_window_uses_its_own_directory(self):
         target = self.target(window([['/bin/zsh']], cwd='/Users/me/repo'))
@@ -117,7 +117,7 @@ class WindowTargetTest(unittest.TestCase):
         row = ssh_window('elsewhere', 'bash -lc pi')
         with self.assertRaises(RuntimeError) as caught:
             self.target(row)
-        self.assertIn('not a pib target', str(caught.exception))
+        self.assertIn('not a sh2pil-sessions target', str(caught.exception))
 
     def test_a_host_window_this_cannot_place_is_refused(self):
         row = ssh_window('user@192.0.2.15', 'bash -lc tmux attach', cwd='/Users/me',
@@ -132,9 +132,9 @@ class WindowTargetTest(unittest.TestCase):
         self.assertIn('cannot find the project', str(caught.exception))
 
     def test_no_kitty_is_refused(self):
-        with patch.object(pib_open, 'kitten_prefix', return_value=None):
+        with patch.object(sh2pil_open, 'kitten_prefix', return_value=None):
             with self.assertRaises(RuntimeError) as caught:
-                pib_open.window_target('7')
+                sh2pil_open.window_target('7')
         self.assertIn('no kitty', str(caught.exception))
 
 
@@ -145,20 +145,20 @@ class WindowMenuCommandTest(unittest.TestCase):
         target = {'server': 'user@192.0.2.15', 'cwd': '/home/me/buildbox',
                   'project': 'buildbox', 'stores': ['pi', 'claude']}
         printed = []
-        with patch.object(pib_open, 'window_target', return_value=target), \
-                patch.object(pib_open, 'pib_tui', return_value=pathlib.Path('/x/sh2pil')), \
+        with patch.object(sh2pil_open, 'window_target', return_value=target), \
+                patch.object(sh2pil_open, 'picker', return_value=pathlib.Path('/x/sh2pil')), \
                 patch('sys.stdout') as out:
-            self.assertEqual(pib_open.window_menu('7', emit=True), 0)
+            self.assertEqual(sh2pil_open.window_menu('7', emit=True), 0)
             printed = ''.join(call.args[0] for call in out.write.call_args_list)
         self.assertIn('--menu-cwd /home/me/buildbox', printed)
         self.assertIn('--menu-server user@192.0.2.15', printed)
         self.assertIn('--menu-stores pi,claude', printed)
 
     def test_a_target_that_cannot_be_read_is_reported_here(self):
-        with patch.object(pib_open, 'window_target',
+        with patch.object(sh2pil_open, 'window_target',
                           side_effect=RuntimeError('no kitty is running')), \
-                patch.object(pib_open, 'fail', return_value=1) as failed:
-            self.assertEqual(pib_open.window_menu('7'), 1)
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.window_menu('7'), 1)
         self.assertIn('no kitty is running', failed.call_args.args[0])
 
 
@@ -166,12 +166,12 @@ class WindowSessionTest(unittest.TestCase):
     """The host and the session one window's chat runs, which the f3 and f4 keys ask for."""
 
     def resolve(self, row, harness='pi', servers=('user@192.0.2.15',), remote=None, zmx=None):
-        with patch.object(pib_open, 'kitten_prefix', return_value=['kitten', '@']), \
-                patch.object(pib_open, 'kitty_windows', return_value=[row]), \
-                patch.object(pib_open, 'configured_servers', return_value=list(servers)), \
-                patch.object(pib_open, 'session_remote_list', return_value=remote or []) as read, \
-                patch.object(pib_open, 'zmx_remote_sessions', return_value=zmx or []):
-            answer = pib_open.window_session(row['target'], harness)
+        with patch.object(sh2pil_open, 'kitten_prefix', return_value=['kitten', '@']), \
+                patch.object(sh2pil_open, 'kitty_windows', return_value=[row]), \
+                patch.object(sh2pil_open, 'configured_servers', return_value=list(servers)), \
+                patch.object(sh2pil_open, 'session_remote_list', return_value=remote or []) as read, \
+                patch.object(sh2pil_open, 'zmx_remote_sessions', return_value=zmx or []):
+            answer = sh2pil_open.window_session(row['target'], harness)
         return answer, read
 
     def pi_row(self, identifier='a', name='', cwd='/home/me/infra', modified=1):
@@ -194,9 +194,9 @@ class WindowSessionTest(unittest.TestCase):
         The line is built by the helper itself, so these tests read the shape the picker
         really produces, environment exports and login snippet included.
         """
-        with patch.object(pib_open, 'config_entries',
+        with patch.object(sh2pil_open, 'config_entries',
                           return_value=[('ssh_env', 'TERM=xterm-256color')]):
-            return pib_open.session_remote_argv(destination, cwd, identifier, store, fork, name)
+            return sh2pil_open.session_remote_argv(destination, cwd, identifier, store, fork, name)
 
     def test_a_window_on_a_configured_host_names_its_session(self):
         row = ssh_window('user@192.0.2.15', 'bash -lc pi', title='Fix ingress docs')
@@ -240,12 +240,12 @@ class WindowSessionTest(unittest.TestCase):
         read.assert_not_called()
 
     def test_no_kitty_and_an_unknown_window_have_no_host(self):
-        with patch.object(pib_open, 'kitten_prefix', return_value=None):
-            self.assertEqual(pib_open.window_session('7'), {'host': ''})
+        with patch.object(sh2pil_open, 'kitten_prefix', return_value=None):
+            self.assertEqual(sh2pil_open.window_session('7'), {'host': ''})
         row = ssh_window('user@192.0.2.15', 'bash -lc pi')
-        with patch.object(pib_open, 'kitten_prefix', return_value=['kitten', '@']), \
-                patch.object(pib_open, 'kitty_windows', return_value=[row]):
-            self.assertEqual(pib_open.window_session('999999'), {'host': ''})
+        with patch.object(sh2pil_open, 'kitten_prefix', return_value=['kitten', '@']), \
+                patch.object(sh2pil_open, 'kitty_windows', return_value=[row]):
+            self.assertEqual(sh2pil_open.window_session('999999'), {'host': ''})
 
     def test_a_configured_host_that_names_no_session_is_refused(self):
         row = ssh_window('user@192.0.2.15', 'bash -lc tmux attach', title='tmux')
@@ -313,7 +313,7 @@ class WindowSessionTest(unittest.TestCase):
 
     def test_a_plain_ssh_window_says_nothing_about_its_chat(self):
         row = window([['ssh', '-t', 'user@192.0.2.15']], title='host')
-        self.assertEqual(pib_open.window_remote_chat(row),
+        self.assertEqual(sh2pil_open.window_remote_chat(row),
                          {'store': '', 'directory': '', 'session': '', 'fork': False})
 
     def test_a_session_with_no_transcript_path_is_refused(self):
@@ -326,29 +326,29 @@ class WindowSessionTest(unittest.TestCase):
 
     def test_an_unknown_store_is_refused(self):
         with self.assertRaises(ValueError):
-            pib_open.window_session('7', 'opencode')
+            sh2pil_open.window_session('7', 'opencode')
 
     def test_the_json_answer_carries_the_host_and_the_session(self):
         row = ssh_window('user@192.0.2.15', 'bash -lc pi', title='Fix ingress docs')
         written = {}
-        with patch.object(pib_open, 'window_session',
+        with patch.object(sh2pil_open, 'window_session',
                           return_value={'host': 'user@192.0.2.15', 'harness': 'pi',
                                         'session': 'a', 'file': '/x/a.jsonl', 'cwd': '/srv',
                                         'name': 'Fix ingress docs'}), \
-                patch.object(pib_open.json, 'dump',
+                patch.object(sh2pil_open.json, 'dump',
                              side_effect=lambda value, *a, **k: written.update(value)), \
-                patch.object(pib_open, 'fail', return_value=1) as failed:
-            self.assertEqual(pib_open.print_window_session('7', 'pi', True), 0)
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.print_window_session('7', 'pi', True), 0)
         failed.assert_not_called()
         self.assertEqual(written['host'], 'user@192.0.2.15')
         self.assertEqual(written['file'], '/x/a.jsonl')
 
     def test_a_refusal_is_one_line_through_fail(self):
-        with patch.object(pib_open, 'window_session',
+        with patch.object(sh2pil_open, 'window_session',
                           side_effect=RuntimeError('could not read host')), \
-                patch.object(pib_open, 'fail', return_value=1) as failed:
-            self.assertEqual(pib_open.print_window_session('7', 'pi'), 1)
-        self.assertEqual(failed.call_args.args[0], 'pib-open: could not read host')
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.print_window_session('7', 'pi'), 1)
+        self.assertEqual(failed.call_args.args[0], 'sh2pil-open: could not read host')
 
 
 class RemotePruneTest(unittest.TestCase):
@@ -358,11 +358,11 @@ class RemotePruneTest(unittest.TestCase):
         return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
     def call(self, result, *arguments):
-        with patch.object(pib_open, 'remote_helper_read', return_value=result) as read, \
-                patch.object(pib_open, 'pib_helper', return_value=pathlib.Path('/pib')):
+        with patch.object(sh2pil_open, 'remote_helper_read', return_value=result) as read, \
+                patch.object(sh2pil_open, 'sessions_helper', return_value=pathlib.Path('/sh2pil-sessions')):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                code = pib_open.main(list(arguments))
+                code = sh2pil_open.main(list(arguments))
         return code, out.getvalue(), read
 
     def test_the_age_and_the_flags_travel_to_the_host(self):
@@ -374,7 +374,7 @@ class RemotePruneTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, '{"sessions": []}')
         _server, name, arguments, _helper = read.call_args.args
-        self.assertEqual(name, 'pib')
+        self.assertEqual(name, 'sh2pil-sessions')
         self.assertEqual(arguments, ['prune', '--older-than', '1d3h', '--harness', 'all',
                                      '--json', '--zmx', '--yes'])
 
@@ -388,14 +388,14 @@ class RemotePruneTest(unittest.TestCase):
         self.assertNotIn('--zmx', arguments)
 
     def test_a_failed_prune_is_reported_through_fail(self):
-        with patch.object(pib_open, 'remote_helper_read',
-                          return_value=self.completed(b'', b'pib: no store\n', 1)), \
-                patch.object(pib_open, 'pib_helper', return_value=pathlib.Path('/pib')), \
-                patch.object(pib_open, 'fail', return_value=1) as failed:
-            code = pib_open.main(['session-remote-prune', 'host', '--older-than', '1d'])
+        with patch.object(sh2pil_open, 'remote_helper_read',
+                          return_value=self.completed(b'', b'sh2pil-sessions: no store\n', 1)), \
+                patch.object(sh2pil_open, 'sessions_helper', return_value=pathlib.Path('/sh2pil-sessions')), \
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            code = sh2pil_open.main(['session-remote-prune', 'host', '--older-than', '1d'])
         self.assertEqual(code, 1)
         self.assertEqual(failed.call_args.args[0],
-                         'pib-open: could not prune host: pib: no store')
+                         'sh2pil-open: could not prune host: sh2pil-sessions: no store')
 
 
 if __name__ == '__main__':

@@ -26,7 +26,7 @@ const defaultPruneAge = "7d"
 // is w, d, h, m, or s.  `1d`, `3h`, `10m`, `1d3h10m`, and `1d 3h` all name a duration.
 //
 // A number with no unit is refused rather than guessed at, so `7` is an error and not a
-// week.  pib parses the same field with the same grammar before it deletes anything; this
+// week.  sh2pil-sessions parses the same field with the same grammar before it deletes anything; this
 // parse is what tells the reader that a typo is a typo before a helper is asked to run.
 func parseAge(raw string) (time.Duration, error) {
 	text := strings.TrimSpace(raw)

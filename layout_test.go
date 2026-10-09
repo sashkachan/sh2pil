@@ -326,7 +326,7 @@ func TestProjectActionsUseSelectedDirectoryAndPlacement(t *testing.T) {
 	}
 
 	// alt+f is the file manager on the list and word-forward inside a field, so the list
-	// action has to reach pib-open with the picked directory.
+	// action has to reach sh2pil-open with the picked directory.
 	m.layout, m.modal, m.askAction = "pane", "", ""
 	_, yaziCmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true})
 	if yaziCmd == nil || m.modal != "" {
@@ -1152,12 +1152,12 @@ func TestClaudeRowNamesItsStore(t *testing.T) {
 	m := model{view: viewSessions, width: 120, height: 20, showPrev: true,
 		sessions: []session{row}, live: map[string]liveInfo{}, cache: map[string]preview{}}
 	helper, args, _ := m.deleteCommand(row)
-	if helper != "pib" || !reflect.DeepEqual(args, []string{"delete", row.ID, "--harness", "claude"}) {
-		t.Fatalf("Claude Code delete = %s %v, want the local pib with the store named", helper, args)
+	if helper != "sh2pil-sessions" || !reflect.DeepEqual(args, []string{"delete", row.ID, "--harness", "claude"}) {
+		t.Fatalf("Claude Code delete = %s %v, want the local sh2pil-sessions with the store named", helper, args)
 	}
 	line := strings.Join(m.previewCommand(row).Args, " ")
 	if !strings.Contains(line, "show --harness claude "+row.ID) {
-		t.Fatalf("Claude Code preview = %q, want pib show for its own store", line)
+		t.Fatalf("Claude Code preview = %q, want sh2pil-sessions show for its own store", line)
 	}
 	if _, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE}); !strings.Contains(m.status, "Claude Code") {
 		t.Fatalf("ctrl+e on a Claude Code row = %q, want it refused by name", m.status)

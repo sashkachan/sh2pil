@@ -218,7 +218,7 @@ func TestUnknownKeyWithADotIsStillReported(t *testing.T) {
 	}
 }
 
-// TestConfigFileOverride pins that --config and PIB_CONFIG select the file, and a matching
+// TestConfigFileOverride pins that --config and SH2PIL_CONFIG select the file, and a matching
 // config.d beside it is still read.
 func TestConfigFileOverride(t *testing.T) {
 	dir := t.TempDir()

@@ -350,18 +350,18 @@ func notifyMessage(started []liveInfo) string {
 	settledWhere := projectName(settledFirst.CWD) + onHost(settledFirst.Server)
 	switch {
 	case blocked == 1 && settled == 0:
-		return "pib: " + blockedWhere + " needs you"
+		return "sh2pil-sessions: " + blockedWhere + " needs you"
 	case blocked == 1:
-		return fmt.Sprintf("pib: %s needs you, %s settled", blockedWhere, plural(settled, "chat"))
+		return fmt.Sprintf("sh2pil-sessions: %s needs you, %s settled", blockedWhere, plural(settled, "chat"))
 	case blocked > 1 && settled == 0:
-		return "pib: " + plural(blocked, "chat") + " need you"
+		return "sh2pil-sessions: " + plural(blocked, "chat") + " need you"
 	case blocked > 1:
-		return fmt.Sprintf("pib: %s need you, %s settled", plural(blocked, "chat"),
+		return fmt.Sprintf("sh2pil-sessions: %s need you, %s settled", plural(blocked, "chat"),
 			plural(settled, "chat"))
 	case settled == 1:
-		return "pib: " + settledWhere + " settled"
+		return "sh2pil-sessions: " + settledWhere + " settled"
 	default:
-		return "pib: " + plural(settled, "chat") + " settled"
+		return "sh2pil-sessions: " + plural(settled, "chat") + " settled"
 	}
 }
 

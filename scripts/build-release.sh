@@ -38,9 +38,9 @@ for target in linux/amd64 darwin/arm64; do
     mkdir -p "${stage}/helpers"
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
         -ldflags "-s -w -X main.version=${version}" -o "${stage}/sh2pil" .
-    install -m 0755 helpers/pib      "${stage}/helpers/pib"
-    install -m 0755 helpers/pib-open "${stage}/helpers/pib-open"
-    install -m 0755 helpers/pi-last  "${stage}/helpers/pi-last"
+    install -m 0755 helpers/sh2pil-sessions "${stage}/helpers/sh2pil-sessions"
+    install -m 0755 helpers/sh2pil-open     "${stage}/helpers/sh2pil-open"
+    install -m 0755 helpers/sh2pil-last     "${stage}/helpers/sh2pil-last"
     install -m 0644 LICENSE README.md config.example.yaml "${stage}/"
 
     tar -C dist -czf "dist/${name}.tar.gz" "${name}"

@@ -238,7 +238,7 @@ func TestAChatAlreadyWaitingIsNotAnnouncedAsNew(t *testing.T) {
 	deliver(t, m, stateMsg{states: map[string]liveInfo{
 		"ses_1": {ID: "ses_1", CWD: "/tmp/repo", State: "blocked", Detail: "confirm"},
 	}})
-	if got := out.String(); !strings.Contains(got, "\x1b]9;pib: repo needs you\x07") {
+	if got := out.String(); !strings.Contains(got, "\x1b]9;sh2pil-sessions: repo needs you\x07") {
 		t.Fatalf("notification = %q, want one desktop notification naming the project", got)
 	}
 	if !m.unread["ses_1"] {
@@ -298,7 +298,7 @@ func TestAFirstFullReadSeedsTheStateSoTheNextChangeIsNews(t *testing.T) {
 	// compare it with, so it is news.
 	deliver(t, m, stateMsg{states: map[string]liveInfo{
 		"ses_1": {ID: "ses_1", CWD: "/tmp/repo", State: "blocked", Detail: "confirm"}}})
-	if !strings.Contains(out.String(), "pib: repo needs you") {
+	if !strings.Contains(out.String(), "sh2pil-sessions: repo needs you") {
 		t.Fatalf("notification = %q, want the change the picker watched announced", out.String())
 	}
 	if !m.unread["ses_1"] {
@@ -320,7 +320,7 @@ func TestTheNotificationModesAndTheTwoGates(t *testing.T) {
 		want    string
 	}{
 		{"terminal, the reader is elsewhere", notifyModeTerminal, false, true,
-			"\x1b]9;pib: repo needs you\x07"},
+			"\x1b]9;sh2pil-sessions: repo needs you\x07"},
 		{"the bell, the reader is elsewhere", notifyModeBell, false, true, "\a"},
 		{"off stays quiet", notifyModeOff, false, true, ""},
 		{"terminal, the reader is looking at the picker", notifyModeTerminal, true, true, ""},
@@ -421,21 +421,21 @@ func TestANotificationNamesAProjectAndAStateAndNothingElse(t *testing.T) {
 				t.Fatalf("notification %q carries %q", message, forbidden)
 			}
 		}
-		if !strings.HasPrefix(message, "pib: ") {
+		if !strings.HasPrefix(message, "sh2pil-sessions: ") {
 			t.Fatalf("notification %q does not name the program", message)
 		}
 	}
-	if got := messages[0]; got != "pib: atlas needs you" {
+	if got := messages[0]; got != "sh2pil-sessions: atlas needs you" {
 		t.Fatalf("message = %q, want the project's own name and the state", got)
 	}
-	if got := messages[1]; got != "pib: a chat settled" {
+	if got := messages[1]; got != "sh2pil-sessions: a chat settled" {
 		t.Fatalf("message = %q, want a word for a chat with no directory to name", got)
 	}
-	if got := messages[2]; got != "pib: atlas needs you, 1 chat settled" {
+	if got := messages[2]; got != "sh2pil-sessions: atlas needs you, 1 chat settled" {
 		t.Fatalf("message = %q, want one message naming both chats", got)
 	}
 	if got := notifyMessage([]liveInfo{{CWD: "/tmp/repo", State: "blocked"},
-		{CWD: "/tmp/docs", State: "blocked"}}); got != "pib: 2 chats need you" {
+		{CWD: "/tmp/docs", State: "blocked"}}); got != "sh2pil-sessions: 2 chats need you" {
 		t.Fatalf("message = %q, want one message about both chats", got)
 	}
 }
@@ -523,7 +523,7 @@ func TestAHostsWaitingChatIsQueuedAndNamedWithItsHost(t *testing.T) {
 	if got := m.selected().ID; got != "ses_remote" {
 		t.Fatalf("the queue key landed on %q, want the host's blocked chat", got)
 	}
-	if got := out.String(); !strings.Contains(got, "pib: api on build-host needs you") {
+	if got := out.String(); !strings.Contains(got, "sh2pil-sessions: api on build-host needs you") {
 		t.Fatalf("notification = %q, want the project and the host named", got)
 	}
 	// The local row is not part of the host's answer, and its own state is untouched.
@@ -536,12 +536,12 @@ func TestAHostsWaitingChatIsQueuedAndNamedWithItsHost(t *testing.T) {
 // always did, and a host's chat adds the destination and no path.
 func TestAHostMessageNamesTheHostOnlyWhenThereIsOne(t *testing.T) {
 	local := notifyMessage([]liveInfo{{ID: "a", CWD: "/Users/someone/atlas", State: "blocked"}})
-	if local != "pib: atlas needs you" {
+	if local != "sh2pil-sessions: atlas needs you" {
 		t.Fatalf("local message = %q, want the project alone", local)
 	}
 	remote := notifyMessage([]liveInfo{{ID: "a", CWD: "/home/someone/atlas", State: "idle",
 		Server: "user@192.0.2.15"}})
-	if remote != "pib: atlas on user@192.0.2.15 settled" {
+	if remote != "sh2pil-sessions: atlas on user@192.0.2.15 settled" {
 		t.Fatalf("remote message = %q, want the project and the host", remote)
 	}
 	if strings.Contains(remote, "/") {

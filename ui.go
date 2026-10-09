@@ -1778,7 +1778,7 @@ func (m *model) windowDialog() string {
 	if message == "" {
 		message = "nothing to do"
 	}
-	return m.dialogBox([]string{titleSty.Render("pib"), "",
+	return m.dialogBox([]string{titleSty.Render("sh2pil"), "",
 		dimSty.Render(trim(message, m.modalWidth()-4)), "",
 		dimSty.Render("any key closes")}, m.modalWidth())
 }

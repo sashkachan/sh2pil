@@ -63,9 +63,9 @@ class Sh2pil < Formula
 
   def install
     bin.install "sh2pil"
-    bin.install "helpers/pib" => "pib"
-    bin.install "helpers/pib-open" => "pib-open"
-    bin.install "helpers/pi-last" => "pi-last"
+    bin.install "helpers/sh2pil-sessions"
+    bin.install "helpers/sh2pil-open"
+    bin.install "helpers/sh2pil-last"
     (share/"sh2pil").install "config.example.yaml"
   end
 

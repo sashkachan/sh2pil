@@ -18,7 +18,7 @@ close_on_navigate: false
 # How often the picker asks what a running chat is doing, in seconds, while this machine is the
 # target.  That answer is what a row's state column and a group's `waiting` mark show: the tool a
 # chat is running, a chat blocked on a person, or one that has settled.  It is the cheap read
-# (pib-open state), about 70 ms with a dozen chats registered, and every tenth read is the full one
+# (sh2pil-open state), about 70 ms with a dozen chats registered, and every tenth read is the full one
 # that also notices a chat which has gone away.  Set to 0 to follow a state only when an action
 # refreshes it, which is what the picker did before it had a clock.  A host is read on a slower one,
 # every third tick -- about nine seconds at this interval -- and only while its connection is
@@ -88,7 +88,7 @@ ssh_env: TERM=xterm-256color
 #
 # A file under config.d/ overrides this one, in name order, so a machine or a session can change
 # a setting without editing this file:  ~/.config/sh2pil/config.d/90-local.yaml
-# --config <file> or PIB_CONFIG loads a different file, and --print-config prints the effective
+# --config <file> or SH2PIL_CONFIG loads a different file, and --print-config prints the effective
 # settings.
 
 # ---- tools ----

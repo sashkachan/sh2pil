@@ -2,7 +2,7 @@
 """Open the last message of a pi session, or the whole transcript, in nvim.
 
 Usage:
-    pi-last [--window ID] [--session FILE] [--role assistant|user] [--full]
+    sh2pil-last [--window ID] [--session FILE] [--role assistant|user] [--full]
             [--sessions-dir DIR] [--nvim /path/to/nvim] [--print-session]
 
 pi writes one JSONL transcript per session under
@@ -34,7 +34,7 @@ Session choice:
 Pass --window @active-kitty-window-id in a kitty binding, and add
 --allow-remote-control to the binding: a child of a key binding has no KITTY_*
 environment, and this helper needs the remote-control socket.  The f3 and f4
-bindings call `pib last`, which asks a Pi window exactly this helper and reads a
+bindings call `sh2pil-sessions last`, which asks a Pi window exactly this helper and reads a
 Claude Code or Codex window from its own store.
 
 A transcript holds only the messages that pi has ended.  During a turn the
@@ -144,7 +144,7 @@ def session_name(path: pathlib.Path) -> str:
                     value = entry.get('name')
                     name = value if isinstance(value, str) else ''
     except OSError as error:
-        print(f'pi-last: cannot read {path}: {error}', file=sys.stderr)
+        print(f'sh2pil-last: cannot read {path}: {error}', file=sys.stderr)
     return squeeze(name)
 
 
@@ -166,7 +166,7 @@ def entries(path: pathlib.Path):
                 if isinstance(entry, dict):
                     yield entry
     except OSError as error:
-        print(f'pi-last: cannot read {path}: {error}', file=sys.stderr)
+        print(f'sh2pil-last: cannot read {path}: {error}', file=sys.stderr)
 
 
 def part_text(content: object) -> str:
@@ -564,10 +564,10 @@ def pick_session(args: argparse.Namespace) -> tuple[pathlib.Path | None, str]:
         return pathlib.Path(args.session).expanduser(), ''
     root = pathlib.Path(args.sessions_dir).expanduser()
     if not root.is_dir():
-        return None, f'pi-last: no session directory at {root}'
+        return None, f'sh2pil-last: no session directory at {root}'
     files = newest_first(root)
     if not files:
-        return None, f'pi-last: no transcripts in {root}'
+        return None, f'sh2pil-last: no transcripts in {root}'
 
     cwd = title = ''
     if args.window:
@@ -593,13 +593,13 @@ def pick_session(args: argparse.Namespace) -> tuple[pathlib.Path | None, str]:
     for path in files:
         if session_cwd(path) == cwd:
             return path, ''
-    warning = f'pi-last: no session for {cwd}; using the newest session instead'
+    warning = f'sh2pil-last: no session for {cwd}; using the newest session instead'
     return files[0], warning
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog='pi-last',
+        prog='sh2pil-last',
         description='Show the last message of a pi session in nvim, or print it.')
     parser.add_argument('--window', default='',
                         help='kitty window id, for example @active-kitty-window-id')
@@ -637,7 +637,7 @@ def main(argv: list[str]) -> int:
     if warning:
         print(warning, file=sys.stderr)
     if args.print_session:
-        print(f'pi-last: session {path}' if path else 'pi-last: session none',
+        print(f'sh2pil-last: session {path}' if path else 'sh2pil-last: session none',
               file=sys.stderr)
 
     where = (os.path.basename(args.display_path) if args.display_path
@@ -650,9 +650,9 @@ def main(argv: list[str]) -> int:
     else:
         text = last_message(path, args.role) if path else ''
     if args.full:
-        hint = '' if text else f'pi-last: no messages written yet in {where}'
+        hint = '' if text else f'sh2pil-last: no messages written yet in {where}'
     else:
-        hint = '' if text else f'pi-last: no {args.role} message written yet in {where}'
+        hint = '' if text else f'sh2pil-last: no {args.role} message written yet in {where}'
     if hint:
         print(hint, file=sys.stderr)
 
@@ -668,7 +668,7 @@ if __name__ == '__main__':
     try:
         code = main(sys.argv[1:])
     except BrokenPipeError:
-        # A reader went away early (pi-last | head, or a pager quit).  Point
+        # A reader went away early (sh2pil-last | head, or a pager quit).  Point
         # stdout at /dev/null so the interpreter's final flush cannot raise
         # again, and exit quietly.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
