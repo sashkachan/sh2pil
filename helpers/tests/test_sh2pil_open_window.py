@@ -57,6 +57,28 @@ class ZmxNameTest(unittest.TestCase):
         row = window([['env', 'PIB_ZMX=/usr/bin/zmx', '/bin/zsh']])
         self.assertEqual(sh2pil_open.window_zmx_name(row), '')
 
+    def test_a_session_created_with_labels_names_the_session_not_the_option(self):
+        # `zmx attach --labels kv <name> <cmd>` is how this program starts a chat in a new
+        # session, so the word after `attach` is the option and the name follows its value.
+        row = window([['/opt/homebrew/bin/zmx', 'attach', '--labels', 'project=repo', 'pi-repo',
+                       '/bin/sh', '-lic', 'pi']])
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-repo')
+
+    def test_the_label_value_may_hold_several_pairs(self):
+        row = window([['/opt/homebrew/bin/zmx', 'attach', '--labels',
+                       'project=repo pi=abc-1', 'pi-repo', '/bin/sh', '-lic', 'pi']])
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-repo')
+
+    def test_a_remote_session_created_with_labels_names_its_session(self):
+        row = ssh_window('host', 'cd -- /srv/repo && env -u ZMX_SESSION '
+                                 'SH2PIL_ZMX=/usr/bin/zmx zmx attach --labels project=repo '
+                                 'pi-repo /bin/sh -c pi')
+        self.assertEqual(sh2pil_open.window_zmx_name(row), 'pi-repo')
+
+    def test_attach_with_labels_and_no_name_names_nothing(self):
+        row = window([['/opt/homebrew/bin/zmx', 'attach', '--labels', 'project=repo']])
+        self.assertEqual(sh2pil_open.window_zmx_name(row), '')
+
 
 class ConfiguredServersTest(unittest.TestCase):
     """The hosts the picker reads, which are the only ones a window may point at."""
@@ -118,6 +140,18 @@ class WindowTargetTest(unittest.TestCase):
                    'modified': 0}]
         target = self.target(row, remote=remote)
         self.assertEqual(target['cwd'], '/home/me/infra')
+
+    def test_a_host_window_in_a_labelled_session_is_placed_by_that_session(self):
+        # The regression: a chat this program starts lives in a session created with labels,
+        # so its window must be placed by the session's directory even when its title names no
+        # session on the host yet.
+        row = ssh_window('user@192.0.2.15',
+                         'env -u ZMX_SESSION SH2PIL_ZMX=/usr/bin/zmx zmx attach '
+                         '--labels project=repo pi-repo /bin/sh -c pi', cwd='/Users/me')
+        target = self.target(row, remote=[{'name': 'pi-repo', 'cwd': '/home/me/repo'}])
+        self.assertEqual(target['server'], 'user@192.0.2.15')
+        self.assertEqual(target['cwd'], '/home/me/repo')
+        self.assertEqual(target['project'], 'repo')
 
     def test_a_host_outside_the_setting_is_refused(self):
         row = ssh_window('elsewhere', 'bash -lc pi')

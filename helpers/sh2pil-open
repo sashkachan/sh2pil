@@ -1978,11 +1978,13 @@ def paste_window(identifier: str) -> int:
 # reads is a target: an ssh to somewhere else is refused, because the picker has no rows for
 # it and could only guess at the host's tools.
 
-# ZMX_ATTACH finds the session a window holds a client for.  A local client runs `zmx attach
-# <name>`; a remote one runs an ssh whose command string carries the same words, so one read
-# covers both, and the lookbehind keeps an env pair such as SH2PIL_ZMX=/usr/bin/zmx from
-# matching on its own.
-ZMX_ATTACH = re.compile(r'(?<![\w.-])zmx\s+attach\s+([A-Za-z0-9._-]+)')
+# ZMX_ATTACH finds the client a window holds.  A local client runs `zmx attach <name>`; a
+# remote one runs an ssh whose command string carries the same words, so one read covers both,
+# and the lookbehind keeps an env pair such as SH2PIL_ZMX=/usr/bin/zmx from matching on its own.
+# The name is found by zmx_attach_name, not by the word right after `attach`: this program
+# creates its chats with `zmx attach --labels project=x pi-y`, so that word is the option.
+ZMX_ATTACH = re.compile(r'(?<![\w.-])zmx\s+attach(?=\s|$)')
+ZMX_ATTACH_NAME = re.compile(r'[A-Za-z0-9._-]+')
 
 
 def configured_servers() -> list[str]:
@@ -1995,9 +1997,39 @@ def window_zmx_name(window: dict) -> str:
     for command in window.get('commands') or []:
         if not command:
             continue
-        match = ZMX_ATTACH.search(' '.join(str(word) for word in command))
-        if match:
-            return match.group(1)
+        text = ' '.join(str(word) for word in command)
+        match = ZMX_ATTACH.search(text)
+        if not match:
+            continue
+        name = zmx_attach_name(text[match.end():])
+        if name:
+            return name
+    return ''
+
+
+def zmx_attach_name(tail: str) -> str:
+    """Return the session name one `zmx attach` argument list names, or ''.
+
+    The name is the first argument that is not an option and not a value an option consumed.
+    `--labels` takes a run of `key=value` words, which is how a session this program starts is
+    labelled, so reading the first word after `attach` would name the session `--labels`.
+    """
+    words = tail.split()
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word == '--labels':
+            while index < len(words) and '=' in words[index] and not words[index].startswith('-'):
+                index += 1
+            continue
+        if word.startswith('-'):
+            # An option with no value of its own: the one value-taking option this program uses
+            # is --labels, above.
+            continue
+        if ZMX_ATTACH_NAME.fullmatch(word):
+            return word
+        return ''
     return ''
 
 
