@@ -412,9 +412,13 @@ func (m *model) rebuildRows() {
 		if group.Ignored != m.showIgnored {
 			continue
 		}
-		matched, found := m.matchGroup(group)
-		if !matched && len(found) == 0 {
-			continue
+		projectMatched, matched := m.matchGroup(group)
+		found := matched
+		if projectMatched {
+			// The project itself matched, by name or by path: opening it must never show an
+			// empty box, so it keeps every session it holds.  The fold below still counts
+			// only the session matches, which is what keeps a project-only match closed.
+			found = group.Sessions
 		}
 		// The toggle keeps only the rows a window already shows, so a group with none of them is
 		// not part of this list at all, and the counts below say what the list holds.
@@ -422,7 +426,7 @@ func (m *model) rebuildRows() {
 		if m.onlyShown && len(found) == 0 {
 			continue
 		}
-		if !matched && len(found) == 0 {
+		if !projectMatched && len(found) == 0 {
 			continue
 		}
 		// The rows that wait on a person come first inside their group, and the project list is
@@ -442,7 +446,7 @@ func (m *model) rebuildRows() {
 				}
 			}
 		}
-		expanded := m.groupExpanded(group, len(found))
+		expanded := m.groupExpanded(group, len(matched), len(found))
 		header := groupRow(group, expanded)
 		// A closed group hides every session under it, and a group starts closed, so the count a
 		// person has to answer belongs on the header too: otherwise the one row worth finding is
@@ -571,16 +575,16 @@ func groupRow(g group, expanded bool) session {
 		Ignored: g.Ignored, Expanded: expanded, Count: len(g.Sessions), Server: g.Server}
 }
 
-// groupExpanded reports whether a group's sessions are shown: the reader opened it, or the
-// search found something inside it.  The reader's own state is never overwritten, so a query
-// that ends puts the list back the way it was.
-func (m *model) groupExpanded(g group, matched int) bool {
+// groupExpanded reports whether a group's sessions are shown: the reader opened it, the shown
+// toggle left rows in it, or the search found a session inside it.  The reader's own state is
+// never overwritten, so a query that ends puts the list back the way it was.
+func (m *model) groupExpanded(g group, matched, kept int) bool {
 	if m.expanded[m.expansionKey(g.CWD, g.Project)] {
 		return true
 	}
 	if m.onlyShown {
 		// The toggle leaves only the rows worth looking at, so a group that survived it opens.
-		return matched > 0
+		return kept > 0
 	}
 	return strings.TrimSpace(m.query) != "" && matched > 0
 }

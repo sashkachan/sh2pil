@@ -429,6 +429,49 @@ func TestSearchOpensOnlyForAsLongAsItMatches(t *testing.T) {
 	}
 }
 
+// TestAProjectOnlyMatchOpensToItsWholeProject pins the three-state match: a group found by
+// its own name or path stays folded, and opened it holds every session, so the box is never
+// empty.  A session found by the query still opens its own group.
+func TestAProjectOnlyMatchOpensToItsWholeProject(t *testing.T) {
+	first := session{ID: "ses_1", Name: "fix login"}
+	second := session{ID: "ses_2", Name: "add tests"}
+	other := session{ID: "ses_3", Name: "css"}
+	m := model{view: viewSessions, width: 100, height: 20, expanded: map[string]bool{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "api", CWD: "/srv/api", Sessions: []session{first, second}},
+			{Project: "web", CWD: "/srv/web", Sessions: []session{other}},
+		}}}}
+	m.rebuildRows()
+
+	m.query = "api"
+	m.rebuildRows()
+	rows := m.filtered()
+	if len(rows) != 1 || !rows[0].ProjectOnly {
+		t.Fatalf("project-only match = %#v, want the folded header alone", rows)
+	}
+	if rows[0].Count != 2 {
+		t.Fatalf("header count = %d, want 2", rows[0].Count)
+	}
+
+	// Opening it shows every session, and the count still describes the whole project.
+	m.toggleGroup(rows[0])
+	rows = m.filtered()
+	if len(rows) != 3 || rows[1].ID != first.ID || rows[2].ID != second.ID {
+		t.Fatalf("opened rows = %#v, want the header and both sessions", rows)
+	}
+	if rows[0].Count != 2 {
+		t.Fatalf("opened header count = %d, want 2", rows[0].Count)
+	}
+
+	// A session match opens its own group and shows the matching session.
+	m.query = "tests"
+	m.rebuildRows()
+	rows = m.filtered()
+	if len(rows) != 2 || rows[1].ID != second.ID {
+		t.Fatalf("session match rows = %#v, want only the matching session", rows)
+	}
+}
+
 // TestGroupJoinFindsTheInnerProject pins the path rule: the longest project path that holds a
 // session wins, so a repository inside another repository lands in the inner one, and a
 // session outside every project still gets a group of its own.
