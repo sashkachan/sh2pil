@@ -35,14 +35,16 @@ base="https://github.com/${repo}/releases/download/${tag}"
 work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
-git clone --quiet --depth 1 "https://github.com/${tap}.git" "${work}/tap"
+# The tap is public, so the clone is anonymous; an empty credential.helper keeps a locked or
+# broken keychain helper on a developer machine from turning that clone into a prompt.
+export GIT_TERMINAL_PROMPT=0
+git -c credential.helper= clone --quiet --depth 1 "https://github.com/${tap}.git" "${work}/tap"
 mkdir -p "${work}/tap/Formula"
 
 cat > "${work}/tap/Formula/sh2pil.rb" <<EOF
 class Sh2pil < Formula
   desc "Terminal session picker for Pi, OpenCode, Claude Code, and Codex"
   homepage "https://github.com/${repo}"
-  version "${version}"
   license "MIT"
 
   on_macos do
@@ -83,5 +85,9 @@ fi
 git -c user.name="sh2pil release" \
     -c user.email="sashkachan@users.noreply.github.com" \
     commit --quiet -m "sh2pil ${version}"
-git -c http.extraheader="AUTHORIZATION: bearer ${TAP_TOKEN}" push --quiet origin HEAD:main
+# git over HTTPS wants HTTP Basic for an OAuth token or a classic PAT; "bearer" is only
+# accepted for a fine-grained PAT or an installation token. Basic covers all of them.
+auth=$(printf 'x-access-token:%s' "${TAP_TOKEN}" | base64 | tr -d '\n')
+git -c credential.helper= -c "http.extraheader=AUTHORIZATION: Basic ${auth}" \
+    push --quiet origin HEAD:main
 echo "update-tap: pushed sh2pil ${version} to ${tap}"
