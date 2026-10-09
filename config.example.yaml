@@ -1,0 +1,108 @@
+# The list the picker opens on: `sessions` for the Pi sessions, `zmx` for the live zmx
+# sessions, or `projects` for the zoxide project list.  alt+p cycles the three lists.
+default_view: sessions
+
+# SSH aliases or user@host destinations; rows group by destination.  A host is asked for its
+# own Pi or OpenCode sessions, which the picker lists beside the local ones with the host in a
+# column of its own, and for its live zmx sessions and zoxide projects.  Refresh with ctrl+r.
+# Example (uncomment and list your own hosts):
+# zmx_servers: user@host, other-host
+
+# Optional remote binary override. Without it, discovery checks PATH then the mise shim.
+# zmx_remote_binary: ~/.local/share/mise/shims/zmx
+
+# Close the picker after it launches an editor, Pi, or another terminal action.
+# Set to false to keep the picker open after the action completes.
+close_on_navigate: false
+
+# How often the picker asks what a running chat is doing, in seconds, while this machine is the
+# target.  That answer is what a row's state column and a group's `waiting` mark show: the tool a
+# chat is running, a chat blocked on a person, or one that has settled.  It is the cheap read
+# (pib-open state), about 70 ms with a dozen chats registered, and every tenth read is the full one
+# that also notices a chat which has gone away.  Set to 0 to follow a state only when an action
+# refreshes it, which is what the picker did before it had a clock.  A host is read on a slower one,
+# every third tick -- about nine seconds at this interval -- and only while its connection is
+# already up, so the clock never asks for a connection or a YubiKey touch.  A host that cannot be
+# reached keeps the states its rows already show, and a host that runs older dotfiles answers with
+# no state at all, so its rows say `live`.
+state_poll_seconds: 3
+
+# ---- the attention queue ----
+# A chat blocked on a prompt needs an answer now.  With attention_sort true a project puts its
+# blocked rows first and leaves every other row, a settled one included, in the order the read gave;
+# the groups themselves keep their order, and the zmx pane is never reordered.  A settled chat is not
+# lifted because it is what every finished chat is, so lifting it would lift most of the list.  n
+# walks the queue: it moves the cursor to the next chat that is blocked on you, opens the group that
+# holds it, and says so when there is none.  Set this to false to read every group in the plain order
+# (n still works).
+attention_sort: true
+
+# What the picker does when a chat starts waiting for you while it is open: `terminal` raises a
+# desktop notification (OSC 9), `bell` rings the terminal bell (kitty is configured with
+# enable_audio_bell off, so it lights the tab instead of making a noise), and `off` stays silent.
+# A notification names a project and a state and nothing else -- never a prompt, a tool argument, a
+# path, or a transcript excerpt -- and one is raised per read, so a burst of chats that start
+# waiting together makes one message.  It is for a reader who is not looking at the picker, so a
+# picker that knows it is in front stays quiet; the picker asks the terminal for focus reports to
+# learn that, and a terminal that never answers leaves it assuming it is not in front, which speaks
+# up rather than falling silent.  Cmd+B leaves a picker behind each time it is pressed and an
+# overtaken one keeps running, so the pickers agree on one speaker: the newest of them.  In every
+# mode the row carries `•` until the cursor reaches it.
+notify: terminal
+
+# Run a new, resumed, or forked Pi chat inside a zmx session of its own, so the chat
+# outlives the window it was started in: close the window and `zmx attach <name>` brings it
+# back, and the session's scrollback is readable with `zmx history`.  Each launch takes a
+# fresh name and labels the session `pi=<session id>` and `project=<directory name>`, which
+# is how the picker finds the window that shows a running chat.  A shell, lazygit, or an
+# editor gets no session.  Needs zmx installed; set to false to use a plain terminal.
+zmx: true
+
+# ---- host environment ----
+# Variables every session on every host is given, as comma-separated NAME=value pairs.  The
+# picker's helper exports them at the start of each chat, shell, lazygit, yazi, or editor it
+# opens on a host, in the same shell that session runs in, so everything in it inherits them.
+# A terminal whose own name the host does not know is the case this is for: xterm-kitty on a
+# host with no kitty terminfo reads and keys correctly as xterm-256color.  Sessions on this
+# machine are untouched, and a read is left alone.
+ssh_env: TERM=xterm-256color
+#
+# One host's own set, added to the shared one: a variable named here replaces the shared
+# value for that host, and the rest of the shared set still arrives.  The host is spelled
+# exactly as zmx_servers spells it.  Example (uncomment to use):
+# ssh_env.user@192.0.2.15: LANG=C.UTF-8
+
+# ---- keybindings ----
+# Every key the picker acts on is a setting named key.<context>.<action>.  The context is
+# list, search, modal, or confirm.  A comma list gives one action several chords, and none
+# disables it.  A chord that two actions claim in one context is reported by --check-config,
+# and the later action keeps its default.  Run `sh2pil --check-config` to print every action
+# and the binding in force.
+#
+# Examples (uncomment to use):
+# key.list.fork: ctrl+f, alt+o
+# key.list.delete: none
+# key.list.help: f1
+# key.list.palette: alt+p, ctrl+p   # the command palette
+# key.list.prune: alt+d             # delete the sessions older than an age
+#
+# A file under config.d/ overrides this one, in name order, so a machine or a session can change
+# a setting without editing this file:  ~/.config/sh2pil/config.d/90-local.yaml
+# --config <file> or PIB_CONFIG loads a different file, and --print-config prints the effective
+# settings.
+
+# ---- tools ----
+# The directory tools this machine runs.  file_browser and git_tool name the command the alt+f
+# and ctrl+g actions run; the tool's own arguments may follow the name.  editor is the program
+# the transcript and project actions open; the -nvim flag wins over it, and $EDITOR is the next
+# fallback.  A remote row runs the tool the host's own config names.
+# file_browser: yazi
+# git_tool: lazygit
+# editor: nvim
+
+# ---- how actions are reached ----
+# keybind runs the primary key directly, prompt opens a numbered next-step menu on it, and both
+# keeps the keys and offers the menu.  The dot key opens the menu for the selected row in every
+# mode.  trigger.<action>: prompt moves one action into the menu and releases its key.
+# trigger.list.fork: prompt
+mode: keybind

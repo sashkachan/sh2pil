@@ -1,0 +1,1735 @@
+#!/usr/bin/env python3
+"""Read and act on Pi, OpenCode, Claude Code, and Codex sessions: list them, show one, or
+copy its resume command.
+
+Usage:
+    pib list [--harness pi|opencode|claude|codex|all] [--json] [--project NAME] [--named]
+    pib show ID [--harness pi|opencode|claude|codex] [--tail N] [--nvim PATH]
+    pib copy ID [--harness pi|opencode|claude|codex]
+    pib last [--window ID] [--harness pi|claude|codex] [--full] [--nvim PATH]
+    pib projects [--json]
+    pib harnesses [--json]
+    pib rename ID NAME [--sessions-dir DIR]
+    pib delete ID [--force] [--sessions-dir DIR]
+    pib prune --older-than AGE [--harness SET] [--zmx] [--yes] [--json]
+
+Proof of concept for the session browser planned in
+~/personal/plans/pi-terminal-browser.  It reads and lists without changing anything, and
+`pib delete` is the one key that writes: it removes the transcript, which is what the reader
+asked the picker's ctrl+w to do.  A running pi process is never touched, and only its own
+`--force` deletes a transcript a live process is still writing.  Actions that open a terminal
+or start pi are handed to `pib-open`, which knows kitty, tmux, and the plain fallback.
+
+The picker is `sh2pil`, the Bubble Tea UI in a kitty overlay: it reads its rows from
+`pib list --json` and its actions from `pib-open`.  The fzf front end this script grew
+from is gone.  What stays here is the store, the command line, and every action that
+must behave the same wherever it is invoked.
+
+Pi rows come from ~/.pi/agent/sessions/<project>/<timestamp>_<id>.jsonl. OpenCode rows
+come from its `opencode db` session table. Claude Code rows come from its own transcripts at
+~/.claude/projects/<project>/<id>.jsonl, named after the project path. Codex rows come from
+its rollout files at ~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl, named after the
+first prompt the reader typed. `--harness` selects one store and defaults to pi; `list` also
+takes a comma-separated set of stores, or `all`, so one call can read every store at once.
+`pib harnesses` answers which stores this machine has, which is how a caller tells a store
+that is absent from a store that holds no sessions.
+`pib list` writes one aligned row per session, with the id behind a tab; `--json` is the
+machine-readable form for other tools:
+
+    live ● | age | name | project | size <TAB> id
+
+A read of several stores answers with the stores this machine has and reports the absent ones
+on stderr.  `list --json` prints `[]` and succeeds when there are no rows at all, so a caller
+that collects rows from many machines is not stopped by a machine that holds none; the reason
+still goes to stderr for a reader.  Without `--json` an empty read keeps its message.
+
+`pib show` runs `pi-last --full`, the helper behind the f4 kitty binding, so a
+session looks the same whether it is read here or opened with f4 in its own
+window.
+
+`pib last` is what the f3 and f4 bindings now call: it reads the session of the kitty window
+it is given, whichever store that window runs.  A window whose process names Claude Code or
+Codex is read from that store, and every other window is read as a Pi window, because Pi is
+the one store that publishes the session its window runs: the title names it.  Claude Code
+and Codex publish no such name, so their session is the newest one of that store whose
+recorded directory is the window's, which is the same rule `pi-last` uses when a Pi title
+says nothing.  Without `--full` the last assistant message is shown, which is what f3 asks
+for; `--full` is the whole transcript, which is what f4 asks for.
+
+A window that runs a chat on a host the picker reads is read from that host: `pib-open`
+names the host from the window's own ssh process, the store and the session from the one
+command that ssh runs there, and the session of that host the window runs, the transcript
+travels here as the bytes the host stores, and this machine's own reader renders it, so f3
+and f4 show the same view on either machine.  That command line is what lets a Claude Code
+or a Codex window on a host be read at all: neither store publishes a session name, and the
+id the window resumes is the one the picker opened it with.  A window that runs here, and a
+window on a host the picker does not read, are read here exactly as before.
+
+One pass over the store reads every transcript once, which takes 0.5 s for 435
+sessions and 264 MB (0.15 s warm).  No index or cache is needed at this size;
+the plan's SQLite index can wait for a measurement that asks for it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import os
+import pathlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+
+DEFAULT_SESSIONS_DIR = pathlib.Path.home() / '.pi/agent/sessions'
+CLAUDE_PROJECTS_DIR = pathlib.Path.home() / '.claude/projects'
+CODEX_SESSIONS_DIR = pathlib.Path.home() / '.codex/sessions'
+FIELD_SEP = '\t'
+
+# Every store this helper knows, in the order a picker lists them.  A store that is not
+# installed is still known: `pib harnesses` says so, and `list` skips it instead of failing.
+HARNESSES = ('pi', 'opencode', 'claude', 'codex')
+
+# The name of each store, for the messages a reader sees.
+HARNESS_LABELS = {'pi': 'Pi', 'opencode': 'OpenCode', 'claude': 'Claude Code',
+                  'codex': 'Codex'}
+
+# Column widths for the list, in display columns.  The widest useful row is about 80
+# columns, so a narrow kitty overlay clips instead of wrapping.
+AGE_WIDTH = 4
+NAME_WIDTH = 44
+PROJECT_WIDTH = 20
+SIZE_WIDTH = 6
+
+
+# ---- age thresholds --------------------------------------------------------------
+
+# The units an age names, in seconds.  A week is spelled w and a minute m, so `1d3h10m` is one
+# day, three hours, and ten minutes.
+AGE_UNITS = {'w': 7 * 86400, 'd': 86400, 'h': 3600, 'm': 60, 's': 1}
+
+
+def parse_age(text: str) -> float:
+    """Return the seconds an age field names, or raise ValueError.
+
+    The field is one or more <number><unit> groups, where the unit is w, d, h, m, or s:
+    `1d`, `3h`, `10m`, `1d3h10m`, and `2w 4d` all name a duration.  Spaces between the groups
+    are allowed.  A number with no unit is refused rather than guessed at, so `7` is an error
+    and not a week: the picker parses the same field with the same grammar, and a mistyped
+    age must never be read as a longer or a shorter one.
+    """
+    raw = text.strip()
+    if not raw:
+        raise ValueError('an age is required, such as 1d, 3h, or 1d3h10m')
+    total, index, groups = 0, 0, 0
+    while index < len(raw):
+        if raw[index].isspace():
+            index += 1
+            continue
+        start = index
+        while index < len(raw) and raw[index].isdigit():
+            index += 1
+        if start == index:
+            raise ValueError(f'{raw[index]!r} is not a number in {raw!r}')
+        number = int(raw[start:index])
+        if index >= len(raw):
+            raise ValueError(f'{raw[start:]!r} names no unit; use w, d, h, m, or s')
+        unit = raw[index].lower()
+        if unit not in AGE_UNITS:
+            raise ValueError(f'{raw[index]!r} is not a unit; use w, d, h, m, or s')
+        total += number * AGE_UNITS[unit]
+        index += 1
+        groups += 1
+    if not groups:
+        raise ValueError('an age is required, such as 1d, 3h, or 1d3h10m')
+    if total <= 0:
+        raise ValueError('an age must be more than zero')
+    return float(total)
+
+
+def human_age(seconds: float) -> str:
+    """Return a short age, such as 20s, 5m, 3h, or 12d."""
+    if seconds < 60:
+        return f'{int(seconds)}s'
+    if seconds < 3600:
+        return f'{int(seconds / 60)}m'
+    if seconds < 86400:
+        return f'{int(seconds / 3600)}h'
+    return f'{int(seconds / 86400)}d'
+
+
+def human_size(size: int) -> str:
+    """Return a short size, such as 12K or 3.4M."""
+    if size < 1024 * 1024:
+        return f'{int(size / 1024)}K'
+    return f'{size / (1024 * 1024):.1f}M'
+
+
+def display_width(text: str) -> int:
+    """Return how many terminal columns text takes.
+
+    Wide characters (CJK, most emoji) take two and combining marks take none, so a session
+    name with an emoji cannot pull every column behind it out of line.
+    """
+    width = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+    return width
+
+
+def fit(text: str, width: int) -> str:
+    """Return text padded or clipped to exactly width display columns."""
+    if display_width(text) > width:
+        clipped = ''
+        for char in text:
+            if display_width(clipped + char) > width - 1:
+                break
+            clipped += char
+        text = clipped + '…'
+    return text + ' ' * max(0, width - display_width(text))
+
+
+def recorded_cwd(path: pathlib.Path) -> str:
+    """Return the cwd a transcript header records, or ''.'"""
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            value = json.loads(handle.readline()).get('cwd')
+    except (OSError, ValueError):
+        return ''
+    return value if isinstance(value, str) else ''
+
+
+def read_session(path: pathlib.Path) -> tuple[str, str]:
+    """Return the recorded cwd and the last stored name of one transcript.
+
+    One pass only: the header line carries the cwd, and the name is the last
+    session_info entry, because a later entry without a name clears the name.
+    pi may be appending to the file while we read, so a line that does not parse
+    is skipped instead of raising.
+    """
+    cwd = name = ''
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for number, line in enumerate(handle):
+                if number == 0 and '"cwd"' in line:
+                    try:
+                        value = json.loads(line).get('cwd')
+                    except ValueError:
+                        value = None
+                    if isinstance(value, str):
+                        cwd = value
+                if '"session_info"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get('type') == 'session_info':
+                    value = entry.get('name')
+                    name = value if isinstance(value, str) else ''
+    except OSError as error:
+        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+    return cwd, ' '.join(name.split())
+
+
+@dataclasses.dataclass
+class Session:
+    """One transcript, as the picker and the viewers need it."""
+
+    path: pathlib.Path
+    cwd: str
+    name: str
+    size: int
+    mtime: float
+    live: bool = False
+    harness: str = 'pi'
+    identifier: str = ''
+
+    @property
+    def id(self) -> str:
+        """Return the session id for every supported harness."""
+        return self.identifier or self.path.stem.split('_', 1)[-1]
+
+    @property
+    def project(self) -> str:
+        """Return the project label: the recorded cwd basename, or the store directory."""
+        if self.cwd:
+            return os.path.basename(self.cwd) or self.cwd
+        return self.path.parent.name.strip('-') or '?'
+
+    @property
+    def alive(self) -> bool:
+        """Report whether the recorded cwd still exists."""
+        return bool(self.cwd) and os.path.isdir(self.cwd)
+
+    def row(self, now: float) -> str:
+        """Return one row: an aligned display field, a tab, then the session id.
+
+        The columns are padded here instead of left to the terminal, because tabs land on
+        fixed stops and one long name would shift every column behind it.  The id rides
+        behind the tab, so a caller can show the aligned text and still reach the id.
+        """
+        flag = '●' if self.live else ' '
+        age = human_age(now - self.mtime).rjust(AGE_WIDTH)
+        name = fit(self.name or '(unnamed)', NAME_WIDTH)
+        project = fit(self.project + ('' if self.alive else ' (gone)'), PROJECT_WIDTH)
+        size = human_size(self.size).rjust(SIZE_WIDTH)
+        return FIELD_SEP.join(['  '.join([flag, age, name, project, size]), self.id])
+
+    def as_json(self) -> dict:
+        return {'id': self.id, 'harness': self.harness, 'name': self.name,
+                'project': self.project, 'cwd': self.cwd, 'alive': self.alive,
+                'live': self.live, 'bytes': self.size, 'modified': self.mtime,
+                'file': '' if self.harness == 'opencode' else str(self.path)}
+
+
+def scan(root: pathlib.Path) -> list[Session]:
+    """Return every Pi session in one store, newest first."""
+    sessions = []
+    for path in root.glob('*/*.jsonl'):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        cwd, name = read_session(path)
+        sessions.append(Session(path, cwd, name, stat.st_size, stat.st_mtime))
+    sessions.sort(key=lambda session: session.mtime, reverse=True)
+    return sessions
+
+
+def scan_opencode() -> list[Session]:
+    """Read OpenCode sessions through its supported database CLI."""
+    command = [tool('opencode'), 'db',
+               'SELECT id,title,directory,time_created,time_updated FROM session '
+               'WHERE time_archived IS NULL ORDER BY time_updated DESC',
+               '--format', 'json']
+    try:
+        result = subprocess.run(command, capture_output=True, env=tool_env('opencode'),
+                                check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f'cannot read OpenCode sessions: {error}') from error
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError('cannot read OpenCode sessions: ' + (detail or 'opencode db failed'))
+    try:
+        rows = json.loads(result.stdout)
+    except ValueError as error:
+        raise RuntimeError(f'opencode db returned invalid JSON: {error}') from error
+    sessions = []
+    for row in rows:
+        cwd = row.get('directory') or ''
+        sessions.append(Session(
+            path=pathlib.Path(''), cwd=cwd, name=row.get('title') or '', size=0,
+            mtime=float(row.get('time_updated') or row.get('time_created') or 0) / 1000,
+            harness='opencode', identifier=row['id']))
+    return sessions
+
+
+def claude_projects_dir() -> pathlib.Path:
+    """Return the Claude Code transcript root, named as its own configuration names it."""
+    override = os.environ.get('CLAUDE_CONFIG_DIR')
+    if override:
+        return pathlib.Path(override).expanduser() / 'projects'
+    return CLAUDE_PROJECTS_DIR
+
+
+def claude_field(line: str, key: str) -> str:
+    """Return one string field of a transcript line, or ''.
+
+    A line that does not parse is skipped instead of raising, because Claude Code may be
+    appending to the transcript while it is read.
+    """
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return ''
+    if not isinstance(entry, dict):
+        return ''
+    value = entry.get(key)
+    return value if isinstance(value, str) else ''
+
+
+def claude_blocks(entry: dict) -> list[tuple[str, str]]:
+    """Return the readable blocks of one message entry, in order.
+
+    A message carries either a plain string or a list of blocks, and only the text and the
+    thinking blocks are read: a tool call and its result are part of how a turn ran, not
+    part of what it said.
+    """
+    message = entry.get('message')
+    if not isinstance(message, dict):
+        return []
+    content = message.get('content')
+    if isinstance(content, str):
+        return [('text', content)]
+    if not isinstance(content, list):
+        return []
+    blocks = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get('type') == 'text' and isinstance(block.get('text'), str):
+            blocks.append(('text', block['text']))
+        elif block.get('type') == 'thinking' and isinstance(block.get('thinking'), str):
+            blocks.append(('thinking', block['thinking']))
+    return blocks
+
+
+def claude_message_text(entry: dict) -> str:
+    """Return only the text blocks of one message entry, joined and stripped."""
+    return '\n'.join(text for kind, text in claude_blocks(entry) if kind == 'text').strip()
+
+
+def claude_message_markdown(entry: dict) -> str:
+    """Return one message entry as Markdown, with any thinking folded away.
+
+    A folded block keeps a long turn readable, the way the OpenCode renderer folds
+    reasoning.
+    """
+    parts = []
+    for kind, text in claude_blocks(entry):
+        if kind == 'thinking':
+            parts.append('<details><summary>thinking</summary>\n\n' + text + '\n\n</details>')
+        else:
+            parts.append(text)
+    return '\n'.join(parts).strip()
+
+
+def claude_prompt(entry: dict) -> str:
+    """Return the first real prompt of one user entry, or ''.
+
+    A user entry also carries tool results and the wrappers a local command writes, so only
+    a plain prompt counts: a wrapper would name the session after a slash command instead of
+    the reader's own words.
+    """
+    if entry.get('isMeta') or entry.get('isSidechain'):
+        return ''
+    text = claude_message_text(entry)
+    return '' if not text or text.startswith('<') else text
+
+
+CLAUDE_COMMAND = re.compile(r'<command-name>(/?[^<]+)</command-name>')
+
+
+def read_claude_session(path: pathlib.Path) -> tuple[str, str]:
+    """Return the recorded cwd and the stored name of one Claude Code transcript.
+
+    One pass only: the cwd rides on the message entries, the name is the last title record,
+    and the first prompt is the name when no title exists.  A session that only ran slash
+    commands has no prompt, so its first command names it, and its short id is the last
+    resort.  A title the reader set wins over the generated one.  Claude Code may be
+    appending to the file while we read, so a line that does not parse is skipped instead
+    of raising.
+    """
+    cwd = custom = generated = prompt = command = ''
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                if not cwd and '"cwd"' in line:
+                    cwd = claude_field(line, 'cwd') or cwd
+                if '"customTitle"' in line:
+                    custom = claude_field(line, 'customTitle') or custom
+                if '"aiTitle"' in line:
+                    generated = claude_field(line, 'aiTitle') or generated
+                if not (prompt and command) and '"type":"user"' in line:
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict) and entry.get('type') == 'user':
+                        prompt = prompt or claude_prompt(entry)
+                        if not command:
+                            found = CLAUDE_COMMAND.search(claude_message_text(entry))
+                            command = found.group(1).strip() if found else ''
+    except OSError as error:
+        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+    return cwd, ' '.join((custom or generated or prompt or command or path.stem[:8]).split())
+
+
+def scan_claude(root: pathlib.Path) -> list[Session]:
+    """Return every Claude Code session in one transcript root, newest first.
+
+    The store is one directory per project, named after the project path, with one transcript
+    per session.  A session's subagent transcripts live one level deeper, in a directory named
+    after the session, so this pattern reads no subagent as a session of its own.
+    """
+    sessions = []
+    for path in root.glob('*/*.jsonl'):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        cwd, name = read_claude_session(path)
+        sessions.append(Session(path, cwd, name, stat.st_size, stat.st_mtime,
+                                harness='claude', identifier=path.stem))
+    sessions.sort(key=lambda session: session.mtime, reverse=True)
+    return sessions
+
+
+def codex_sessions_dir() -> pathlib.Path:
+    """Return the Codex rollout root, named as its own environment names it."""
+    override = os.environ.get('CODEX_HOME')
+    if override:
+        return pathlib.Path(override).expanduser() / 'sessions'
+    return CODEX_SESSIONS_DIR
+
+
+def codex_identifier(path: pathlib.Path) -> str:
+    """Return the session id a Codex rollout file name ends with.
+
+    The name is `rollout-<timestamp>-<uuid>`, so the id is the last five hyphen-separated
+    groups of the stem.  This is the fallback for a rollout whose header cannot be read.
+    """
+    parts = path.stem.split('-')
+    return '-'.join(parts[-5:]) if len(parts) >= 5 else path.stem
+
+
+def read_codex_session(path: pathlib.Path) -> tuple[str, str, str]:
+    """Return the recorded cwd, the stored name, and the id of one Codex rollout.
+
+    One pass only: the header line carries the id and the cwd, and the name is the first
+    prompt the reader typed.  Older rollouts store that as a `user_message` event; current
+    rollouts store it as a user `message` in a `response_item`.  System instructions can
+    surround the first user message, so use the same filter as the transcript reader.
+    Codex may be appending to the file while we read, so a line that does not parse is
+    skipped instead of raising.
+    """
+    cwd = identifier = name = ''
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                if identifier and name:
+                    break
+                if not identifier and '"session_meta"' in line:
+                    payload = parsed_payload(line)
+                    identifier = payload.get('id') or identifier
+                    cwd = payload.get('cwd') or cwd
+                elif not name and '"user_message"' in line:
+                    payload = parsed_payload(line)
+                    if payload.get('type') == 'user_message':
+                        name = ' '.join(str(payload.get('message') or '').split())
+                elif not name and '"response_item"' in line:
+                    entry = parsed_entry(line)
+                    payload = entry.get('payload', {})
+                    if (payload.get('type') == 'message' and payload.get('role') == 'user'):
+                        name = ' '.join(codex_message_markdown(payload).split())
+    except OSError as error:
+        print(f'pib: cannot read {path}: {error}', file=sys.stderr)
+    return cwd, name, identifier or codex_identifier(path)
+
+
+def parsed_entry(line: str) -> dict:
+    """Return one stored entry, or an empty mapping."""
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def parsed_payload(line: str) -> dict:
+    """Return the payload of one stored entry, or an empty mapping."""
+    payload = parsed_entry(line).get('payload')
+    return payload if isinstance(payload, dict) else {}
+
+
+def scan_codex(root: pathlib.Path) -> list[Session]:
+    """Return every Codex session in one rollout root, newest first.
+
+    The store is one directory per day, so the path carries the year, the month, and the
+    day, and one rollout is one session.
+    """
+    sessions = []
+    for path in root.glob('*/*/*/rollout-*.jsonl'):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        cwd, name, identifier = read_codex_session(path)
+        sessions.append(Session(path, cwd, name, stat.st_size, stat.st_mtime,
+                                harness='codex', identifier=identifier))
+    sessions.sort(key=lambda session: session.mtime, reverse=True)
+    return sessions
+
+
+def harness_set(value: str) -> list[str]:
+    """Return the stores one `--harness` value names, in the order the stores are known.
+
+    One name selects one store; a comma-separated set, or `all`, selects several, which is
+    what a picker asks for when it shows every store at once.  A name this helper does not
+    know selects nothing, so a caller that names a store it cannot have is told so instead
+    of being given rows from another store.
+    """
+    wanted = [part.strip() for part in value.split(',') if part.strip()]
+    if not wanted or 'all' in wanted:
+        return list(HARNESSES)
+    return [harness for harness in HARNESSES if harness in wanted]
+
+
+def tool_available(name: str) -> bool:
+    """Report whether one of the tools this helper runs is on this machine.
+
+    The search is the one `tool` makes, so presence and the read agree: a tool found in the
+    fallback directories counts even when a key-binding child's PATH does not hold it.
+    """
+    return bool(shutil.which(name)) or pathlib.Path(tool(name)).exists()
+
+
+def harness_presence(pi_root: pathlib.Path) -> list[dict]:
+    """Report which stores this machine has, and why a store is missing.
+
+    A store is present when its own files are there, which is what lets a caller tell "no
+    sessions" from "not installed on this machine".  Nothing is scanned: a picker asks this
+    on every target read, and the session read that follows is what pays for the rows.
+    """
+    stores = {
+        'pi': (pi_root, f'no session store at {pi_root}'),
+        'claude': (claude_projects_dir(),
+                   f'no transcript store at {claude_projects_dir()}'),
+        'codex': (codex_sessions_dir(), f'no rollout store at {codex_sessions_dir()}'),
+    }
+    report = []
+    for harness in HARNESSES:
+        if harness == 'opencode':
+            # OpenCode keeps its sessions in its own database, so its CLI is the store.
+            present = tool_available('opencode')
+            reason = '' if present else 'the opencode CLI is not installed'
+        else:
+            root, reason = stores[harness]
+            present = root.is_dir()
+            reason = '' if present else reason
+        report.append({'harness': harness, 'present': present, 'reason': reason})
+    return report
+
+
+def read_store(harness: str, args: argparse.Namespace) -> tuple[list[Session], str]:
+    """Read one store on this machine.  Return its rows, and why it could not be read.
+
+    The reason is empty on success.  A store that is not installed here reports that fact
+    instead of raising, so a caller that asked for several stores still gets the ones that
+    are there.
+    """
+    if harness == 'opencode':
+        try:
+            return scan_opencode(), ''
+        except RuntimeError as error:
+            return [], str(error)
+    if harness == 'claude':
+        root = claude_projects_dir()
+        if not root.is_dir():
+            return [], f'no Claude Code transcript store at {root}'
+        return scan_claude(root), ''
+    if harness == 'codex':
+        root = codex_sessions_dir()
+        if not root.is_dir():
+            return [], f'no Codex rollout store at {root}'
+        return scan_codex(root), ''
+    root = pathlib.Path(args.sessions_dir).expanduser()
+    if not root.is_dir():
+        return [], f'no session store at {root}'
+    return scan(root), ''
+
+
+def select(sessions: list[Session], wanted: str) -> tuple[Session | None, list[Session]]:
+    """Resolve a full id or an unambiguous prefix.  Return the hit and all matches."""
+    wanted = wanted.strip()
+    exact = [session for session in sessions if session.id == wanted]
+    if exact:
+        return exact[0], exact
+    folded = wanted.lower()
+    matches = [session for session in sessions if session.id.lower().startswith(folded)]
+    return (matches[0] if len(matches) == 1 else None), matches
+
+
+def fail(message: str) -> int:
+    """Report a problem, and keep it on screen when a person is watching.
+
+    A key binding opens an overlay and closes it the moment the child exits, so a
+    message on stderr would vanish before it could be read.  Wait for a key only
+    when stdin is a terminal; a helper a picker runs gets stdin from /dev/null,
+    so it reports and exits.
+    """
+    print(message, file=sys.stderr)
+    if sys.stdin.isatty():
+        print('pib: press Enter to close', file=sys.stderr)
+        try:
+            sys.stdin.readline()
+        except (KeyboardInterrupt, OSError):
+            pass
+    return 1
+
+
+def tool(name: str) -> str:
+    """Return an absolute tool path.
+
+    A key-binding child has a minimal PATH, where /opt/homebrew/bin is missing, so the
+    launcher is not enough: the search is followed by the usual places.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in ('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'):
+        candidate = pathlib.Path(directory) / name
+        if candidate.exists():
+            return str(candidate)
+    return name
+
+
+def tool_env(name: str) -> dict[str, str]:
+    """Return an environment in which a tool can find its own interpreter.
+
+    pi is a Node program (`#!/usr/bin/env node`), and a kitty key-binding child has
+    PATH=/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin, so `env node` fails with
+    "node: No such file or directory" -- which is how a rename looked like pi refusing to
+    work.  The tools sit beside their interpreter in /opt/homebrew/bin, so that directory
+    goes first.  pib-open solves the same problem for the terminals it launches by running
+    them through a login shell; this call is a plain pipe, so it sets the path itself.
+    """
+    env = dict(os.environ)
+    directory = os.path.dirname(tool(name))
+    if directory:
+        env['PATH'] = directory + os.pathsep + env.get('PATH', '')
+    return env
+
+
+def rename_session(session: Session, name: str, force: bool = False) -> int:
+    """Rename a Pi session by asking pi to write the record.
+
+    The transcript belongs to pi, so this never edits it directly: pi appends the
+    session_info record itself, over its RPC mode.  Two things stop it, and both are
+    reported: a pi process already owns the session (pass --force to overrule), and pi
+    refuses to open a session whose project directory is gone.
+    """
+    if session.harness != 'pi':
+        return fail(f'pib: renaming {harness_label(session.harness)} sessions is not supported')
+    if not session.alive:
+        return fail(f'pib: {session.cwd or "the project directory"} is gone; pi cannot open '
+                    'this session to rename it')
+    # No live check here on purpose.  The name is written by pi itself over its RPC mode, a
+    # record is appended rather than rewritten, and the running process simply keeps the name
+    # it read at startup until it exits.  Refusing only made the reader ask a pointless
+    # question; deleting is the destructive one, and that keeps its guard.
+    live = session.id in live_ids()
+    request = json.dumps({'type': 'set_session_name', 'name': name}) + '\n'
+    try:
+        result = subprocess.run([tool('pi'), '--mode', 'rpc', '--session', str(session.path),
+                                 '--offline'], input=request.encode(), capture_output=True,
+                                timeout=90, env=tool_env('pi'))
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return fail(f'pib: could not ask pi to rename: {error}')
+    if result.returncode != 0:
+        return fail('pib: pi refused the rename: '
+                    + result.stderr.decode('utf-8', 'replace').strip()[:200])
+    print(f'renamed {session.id[:8]} to {name!r}')
+    if live:
+        # The rename went into the transcript, which the running pi does not read again, so
+        # its terminal would keep the old name.  pib-open knows which terminal that is.
+        note = subprocess.run([sys.executable, str(pib_open()), 'retitle', str(session.path),
+                               '--name', name], capture_output=True)
+        if note.returncode == 0:
+            print('the tab that runs it now carries that name too', file=sys.stderr)
+        else:
+            print('could not retitle the tab that runs it: '
+                  + note.stderr.decode('utf-8', 'replace').strip()[:140], file=sys.stderr)
+    return 0
+
+
+def delete_session(session: Session, force: bool = False) -> int:
+    """Delete a transcript, on purpose and with no trash in between.
+
+    The reader asked for a delete that is a delete, so the file goes.  A running pi process
+    still stops the default: that process would go on writing to a path nobody owns.  Only pi
+    can say which process owns which transcript, so that guard is pi's alone; Claude Code
+    writes one transcript per session, and there the reader's own question is the guard.
+    """
+    if session.harness == 'opencode':
+        return fail('pib: deleting OpenCode sessions is not supported')
+    if session.harness == 'pi' and not force and session.id in live_ids():
+        return fail('pib: a pi process is running that session; deleting it would leave that '
+                    'process writing to a file nobody owns (pass --force to overrule)')
+    if not session.path.exists():
+        return fail(f'pib: {session.path} is already gone')
+    try:
+        session.path.unlink()
+        if session.harness == 'claude':
+            # Claude Code keeps a session's subagent transcripts in a directory named after
+            # the session, beside the session's own transcript.
+            subagents = session.path.with_suffix('')
+            if subagents.is_dir():
+                shutil.rmtree(subagents)
+        if session.harness == 'codex':
+            # Codex keeps its own index beside the rollouts, and only the Codex command line
+            # can update it.  That command line may be absent or older than the store, so the
+            # rollout goes here and the index is left to say what the store says.
+            print('pib: the rollout is gone; Codex\'s own index may still list this id',
+                  file=sys.stderr)
+    except OSError as error:
+        return fail(f'pib: could not delete the transcript: {error}')
+    print(f'deleted {session.id[:8]}: {session.path}', file=sys.stderr)
+    return 0
+
+
+# ---- the old sessions -----------------------------------------------------------
+
+ZMX_ROW_FIELDS = ('name', 'chat', 'pi', 'project', 'cwd', 'file', 'created')
+
+
+def zmx_aged(seconds: float, now: float) -> tuple[list[dict], str]:
+    """Return the live zmx sessions older than an age, and why none could be read.
+
+    A session the picker itself runs inside is never one of them, and neither is one a
+    terminal is attached to: both are in use right now, and the age of a session says
+    nothing about that.  `pib-open` owns the zmx verbs, so it is asked rather than zmx.
+    """
+    try:
+        helper = pib_open()
+        result = subprocess.run([sys.executable, str(helper), 'zmx-list', '--json'],
+                                capture_output=True)
+    except (OSError, SystemExit) as error:
+        # A host without pib-open is not a failure of the transcripts: its zmx sessions are
+        # simply not part of this read, and the reader is told which half was skipped.
+        return [], f'cannot read the zmx sessions: {error}'
+    if result.returncode != 0:
+        return [], ('cannot read the zmx sessions: '
+                    + result.stderr.decode('utf-8', 'replace').strip()[:140])
+    try:
+        entries = json.loads(result.stdout or '[]')
+    except ValueError as error:
+        return [], f'cannot read the zmx sessions: {error}'
+    aged = []
+    for entry in entries:
+        created = entry.get('created') or 0
+        if not created or entry.get('current') or entry.get('clients'):
+            continue
+        if now - created >= seconds:
+            aged.append({field: entry.get(field) for field in ZMX_ROW_FIELDS})
+    aged.sort(key=lambda entry: entry['created'])
+    return aged, ''
+
+
+def zmx_kill(name: str) -> bool:
+    """End one zmx session through pib-open, which owns the zmx verbs."""
+    try:
+        helper = pib_open()
+        result = subprocess.run([sys.executable, str(helper), 'zmx-kill', name],
+                                capture_output=True)
+    except (OSError, SystemExit) as error:
+        print(f'pib: could not end {name}: {error}', file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print('pib: could not end ' + name + ': '
+              + result.stderr.decode('utf-8', 'replace').strip()[:140], file=sys.stderr)
+        return False
+    return True
+
+
+def prune_command(args: argparse.Namespace) -> int:
+    """Delete the transcripts older than an age, and the zmx sessions older than it too.
+
+    The age is the only criterion: a transcript is measured by its last write and a zmx
+    session by when it was created, and nothing is removed to make a number.  A running Pi
+    chat stops its own delete, because that process would go on writing to a file nobody
+    owns.  Without `--yes` nothing is deleted at all and the selection is only reported,
+    which is how the picker asks its question before it asks its second one.
+    """
+    try:
+        seconds = parse_age(args.older_than)
+    except ValueError as error:
+        return fail(f'pib: {error}')
+
+    requested = harness_set(args.harness)
+    if not requested:
+        return fail(f'pib: unknown harness {args.harness!r}; '
+                    f'expected one of {", ".join(HARNESSES)}')
+
+    now = time.time()
+    rows, failures = [], []
+    for harness in requested:
+        found, reason = read_store(harness, args)
+        if reason:
+            failures.append((harness, reason))
+            continue
+        rows.extend(found)
+    for harness, reason in failures:
+        print(f'pib: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
+
+    # OpenCode keeps its sessions in its own database, and only its own command line removes
+    # one.  Its rows are left where they are, and said so once rather than once per row.
+    kept_back = [session for session in rows if session.harness == 'opencode']
+    rows = [session for session in rows if session.harness != 'opencode']
+
+    live = live_ids()
+    aged, running = [], []
+    for session in rows:
+        if now - session.mtime < seconds:
+            continue
+        if session.harness == 'pi' and session.id in live and not args.force:
+            running.append(session)
+            continue
+        aged.append(session)
+    aged.sort(key=lambda session: session.mtime)
+
+    zmx_rows, zmx_note = [], ''
+    if args.zmx:
+        zmx_rows, zmx_note = zmx_aged(seconds, now)
+
+    deleted_sessions, deleted_zmx = 0, 0
+    if args.yes:
+        for session in aged:
+            if delete_session(session, force=True) == 0:
+                deleted_sessions += 1
+        for entry in zmx_rows:
+            if zmx_kill(entry['name']):
+                deleted_zmx += 1
+
+    payload = {
+        'older_than': args.older_than,
+        'seconds': seconds,
+        'deleted': bool(args.yes),
+        'sessions': [session.as_json() for session in aged],
+        'zmx': zmx_rows,
+        'running': [session.as_json() for session in running],
+        'deleted_sessions': deleted_sessions,
+        'deleted_zmx': deleted_zmx,
+    }
+    if args.json:
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write('\n')
+    else:
+        for session in aged:
+            print(session.row(now))
+        for entry in zmx_rows:
+            print(f'zmx  {entry["name"]}  {entry["chat"] or "(no chat)"}')
+        if not aged and not zmx_rows:
+            print(f'nothing on this machine is older than {args.older_than}')
+
+    # The rows go out before the summary, so a reader sees what the count is counting even
+    # when the two streams interleave on one terminal.
+    sys.stdout.flush()
+    counted = f'{len(aged)} transcripts and {len(zmx_rows)} zmx sessions'
+    if args.yes:
+        print(f'pib: deleted {deleted_sessions} transcripts and {deleted_zmx} zmx sessions '
+              f'older than {args.older_than}', file=sys.stderr)
+    else:
+        print(f'pib: would delete {counted} older than {args.older_than}; '
+              'pass --yes to delete', file=sys.stderr)
+    if running:
+        print(f'pib: left {len(running)} running session(s) alone; a pi process is still '
+              'writing them (pass --force to delete one anyway)', file=sys.stderr)
+    if kept_back:
+        print(f'pib: left {len(kept_back)} OpenCode session(s): only OpenCode removes its own',
+              file=sys.stderr)
+    if zmx_note:
+        print(f'pib: {zmx_note}', file=sys.stderr)
+    return 0
+
+
+def harness_label(harness: str) -> str:
+    """Return the name of a store as a reader sees it."""
+    return HARNESS_LABELS.get(harness, harness or 'pi')
+
+
+# ---- the session of one window -------------------------------------------------
+
+# The stores a window can run other than Pi, by the name the process itself carries.  Pi
+# needs no entry: a window that names neither of these is read as a Pi window, which is what
+# the f3 and f4 bindings did before a session could come from another store.
+WINDOW_TOOLS = ('claude', 'codex')
+
+
+def kitty_prefixes() -> list[list[str]]:
+    """Return the `kitten @` arguments that reach a live kitty, best first.
+
+    A child of a key binding has no KITTY_* environment, so the remote-control socket is
+    found the way the other helpers find it: the one the controlling terminal exports, then
+    the newest socket in /tmp that answers.
+    """
+    prefixes = [['kitten', '@']]
+    try:
+        sockets = sorted(pathlib.Path('/tmp').glob('kitty-*'),
+                         key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return prefixes
+    return prefixes + [['kitten', '@', '--to', f'unix:{socket}'] for socket in sockets]
+
+
+def kitty_windows() -> list[dict]:
+    """Return one entry per kitty window: its id, its cwd, its title, its processes."""
+    for prefix in kitty_prefixes():
+        try:
+            result = subprocess.run(prefix + ['ls'], capture_output=True)
+        except OSError:
+            continue
+        if result.returncode != 0:
+            continue
+        try:
+            os_windows = json.loads(result.stdout)
+        except ValueError:
+            continue
+        windows = []
+        for os_window in os_windows:
+            for tab in os_window.get('tabs', []):
+                for window in tab.get('windows', []):
+                    windows.append({
+                        'id': str(window.get('id')),
+                        'cwd': window.get('cwd') or '',
+                        'title': window.get('title') or '',
+                        'commands': [process.get('cmdline') or []
+                                     for process in window.get('foreground_processes') or []],
+                    })
+        return windows
+    return []
+
+
+def window_facts(identifier: str) -> dict:
+    """Return what kitty knows about one window, or an empty mapping."""
+    for window in kitty_windows():
+        if window['id'] == str(identifier):
+            return window
+    return {}
+
+
+def window_harness(commands: list[list[str]]) -> str:
+    """Name the store one window runs, from the processes kitty reports for it.
+
+    Only the program of each process is read, and it is cut at the separators a launcher
+    uses, so `claude`, `npx @anthropic-ai/claude-code`, and a script an interpreter runs are
+    all recognised, while an argument that happens to name a store is not.
+    """
+    for argv in commands:
+        for word in argv[:2]:
+            for part in re.split(r'[/\\@.-]', str(word)):
+                if part in WINDOW_TOOLS:
+                    return part
+    return 'pi'
+
+
+def recorded_store_cwd(path: pathlib.Path, harness: str) -> str:
+    """Return the directory one stored transcript records, reading only its head.
+
+    Both stores write the directory into their first entries, so the match costs one line
+    per transcript instead of a read of the whole conversation.
+    """
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                if harness == 'claude':
+                    if '"cwd"' in line:
+                        return claude_field(line, 'cwd')
+                    continue
+                if '"session_meta"' in line:
+                    value = parsed_payload(line).get('cwd')
+                    return value if isinstance(value, str) else ''
+    except OSError:
+        return ''
+    return ''
+
+
+def newest_store_session(harness: str, cwd: str) -> Session | None:
+    """Return the newest session of one store whose recorded directory is cwd.
+
+    Neither Claude Code nor Codex publishes which session a window runs, so the directory is
+    the only thing the window and the store have in common.  A directory with two sessions
+    in one store therefore names the newest of them, which is the rule `pi-last` falls back
+    to for a Pi window whose title says nothing.
+    """
+    if not cwd:
+        return None
+    if harness == 'claude':
+        root = claude_projects_dir()
+        pattern = '*/*.jsonl'
+    else:
+        root = codex_sessions_dir()
+        pattern = '*/*/*/rollout-*.jsonl'
+    found = []
+    for path in root.glob(pattern):
+        try:
+            found.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    for _, path in sorted(found, reverse=True):
+        if recorded_store_cwd(path, harness) != cwd:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        return Session(path=path, cwd=cwd, name='', size=stat.st_size, mtime=stat.st_mtime,
+                       harness=harness, identifier=path.stem)
+    return None
+
+
+def last_assistant(lines: list[str]) -> list[str]:
+    """Keep the last assistant section of a rendered transcript.
+
+    f3 shows what the assistant said last, which is what `pi-last` answers for a Pi session;
+    for a store rendered here, the same answer is the last section the assistant wrote, with
+    the user turn and the tool results that came after it left out.
+    """
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index] == '## assistant':
+            return lines[index:]
+    return lines
+
+
+def empty_reason(requested: list[str], failures: list[tuple[str, str]],
+                 args: argparse.Namespace) -> str:
+    """Return why a read found no sessions, in the words the reader sees.
+
+    A store that could not be read is reported by its own reason; a set of stores that simply
+    holds nothing is named as a set.  The reason is a message for both cases, so only the exit
+    status differs: a machine reading JSON gets an empty row set either way.
+    """
+    if failures and len(requested) == 1:
+        return failures[0][1]
+    if failures:
+        return 'no sessions found in ' + ', '.join(harness_label(h) for h in requested)
+    if requested[0] == 'pi':
+        return f'no transcripts in {pathlib.Path(args.sessions_dir).expanduser()}'
+    if len(requested) == 1:
+        return f'no {harness_label(requested[0])} sessions found'
+    return 'no sessions found in ' + ', '.join(harness_label(h) for h in requested)
+
+
+def pib_open() -> pathlib.Path:
+    """Return the launcher adapter, which turns an action into a terminal."""
+    override = os.environ.get('PIB_OPEN')
+    if override:
+        return pathlib.Path(override)
+    live = pathlib.Path.home() / '.local/bin/pib-open'
+    if live.exists():
+        return live
+    found = shutil.which('pib-open')
+    if found:
+        return pathlib.Path(found)
+    raise SystemExit('pib: pib-open not found; set PIB_OPEN or add it to PATH')
+
+
+def pi_last() -> pathlib.Path:
+    """Return the helper that renders a transcript, the same one the f4 binding uses."""
+    override = os.environ.get('PIB_PI_LAST')
+    if override:
+        return pathlib.Path(override)
+    live = pathlib.Path.home() / '.local/bin/pi-last'
+    if live.exists():
+        return live
+    found = shutil.which('pi-last')
+    if found:
+        return pathlib.Path(found)
+    raise SystemExit('pib: pi-last not found; set PIB_PI_LAST or add it to PATH')
+
+
+def live_ids() -> set[str]:
+    """Return the sessions that a running pi process may own, according to pib-open.
+
+    `pib-open live` validates Pi's process-to-session records. An empty set means no
+    tracked session was detected; the resume guard also checks untracked processes.
+    """
+    try:
+        result = subprocess.run([sys.executable, str(pib_open()), 'live', '--json'],
+                                capture_output=True)
+        return {entry['id'] for entry in json.loads(result.stdout)}
+    except (OSError, ValueError, KeyError, SystemExit):
+        return set()
+
+
+def show(session: Session, nvim: str | None, tail: int | None) -> int:
+    """Print one transcript, or open it in nvim the way f4 does.
+
+    A tail is rendered by pi-last, which reads only the end of the transcript and cuts at a
+    code fence.  Doing it here meant rendering the whole session to throw most of it away,
+    which is what made the preview slow.  A store that is not a Pi transcript is rendered
+    here instead, because no helper reads it.
+    """
+    if session.harness == 'opencode':
+        return show_opencode(session, nvim, tail)
+    if session.harness == 'claude':
+        return show_claude(session, nvim, tail)
+    if session.harness == 'codex':
+        return show_codex(session, nvim, tail)
+    command = pi_last_command(session)
+    if tail:
+        command += ['--tail', str(tail)]
+    if nvim:
+        return subprocess.run(command + ['--nvim', nvim], check=False).returncode
+    result = subprocess.run(command, capture_output=True)
+    sys.stdout.write(result.stdout.decode('utf-8', 'replace'))
+    if result.returncode != 0:
+        # A failing helper explains itself on stderr; swallowing it made a broken tail look
+        # like an empty transcript.
+        sys.stderr.write(result.stderr.decode('utf-8', 'replace'))
+    return result.returncode
+
+
+def show_opencode(session: Session, nvim: str | None, tail: int | None) -> int:
+    """Render an OpenCode export as readable Markdown."""
+    try:
+        result = subprocess.run([tool('opencode'), 'export', session.id],
+                                capture_output=True, env=tool_env('opencode'),
+                                check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return fail(f'pib: could not export OpenCode session: {error}')
+    if result.returncode != 0:
+        return fail('pib: OpenCode export failed: '
+                    + result.stderr.decode('utf-8', 'replace').strip()[:200])
+    try:
+        export = json.loads(result.stdout)
+    except ValueError as error:
+        return fail(f'pib: OpenCode returned invalid export JSON: {error}')
+    lines = []
+    for message in export.get('messages', []):
+        role = message.get('info', {}).get('role', 'assistant')
+        content = []
+        for part in message.get('parts', []):
+            if part.get('type') == 'text' and isinstance(part.get('text'), str):
+                content.append(part['text'])
+            elif part.get('type') == 'reasoning' and isinstance(part.get('text'), str):
+                content.append('<details><summary>thinking</summary>\n\n'
+                               + part['text'] + '\n\n</details>')
+        text = '\n'.join(content).strip()
+        if text:
+            lines.extend([f'## {role}', '', text, ''])
+    return write_markdown(lines, nvim, tail)
+
+
+def show_claude(session: Session, nvim: str | None, tail: int | None,
+                last_only: bool = False) -> int:
+    """Render one Claude Code transcript as readable Markdown.
+
+    The entries are the store's own record of the conversation, so only the entries that
+    carry a message are read: a title, an attachment, or a queue operation is bookkeeping,
+    not a turn.  With last_only the last thing the assistant said is kept, which is what the
+    f3 binding asks for.
+    """
+    lines = []
+    try:
+        handle = session.path.open('r', encoding='utf-8', errors='replace')
+    except OSError as error:
+        return fail(f'pib: cannot read {session.path}: {error}')
+    with handle:
+        for line in handle:
+            if '"type"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get('type') not in ('user', 'assistant'):
+                continue
+            text = claude_message_markdown(entry)
+            if text:
+                lines.extend([f'## {entry["type"]}', '', text, ''])
+    if last_only:
+        lines = last_assistant(lines)
+    return write_markdown(lines, nvim, tail)
+
+
+def show_codex(session: Session, nvim: str | None, tail: int | None,
+               last_only: bool = False) -> int:
+    """Render one Codex rollout as readable Markdown.
+
+    The entries are the store's own record of the conversation, so only the messages the two
+    sides wrote are read: the instructions Codex stores around a turn are bookkeeping, and a
+    tool call and its result are part of how a turn ran, not part of what it said.  With
+    last_only the last thing the assistant said is kept, which is what the f3 binding asks
+    for.
+    """
+    lines = []
+    try:
+        handle = session.path.open('r', encoding='utf-8', errors='replace')
+    except OSError as error:
+        return fail(f'pib: cannot read {session.path}: {error}')
+    with handle:
+        for line in handle:
+            if '"response_item"' not in line:
+                continue
+            payload = parsed_payload(line)
+            if payload.get('type') != 'message' or payload.get('role') not in ('user',
+                                                                              'assistant'):
+                continue
+            text = codex_message_markdown(payload)
+            if text:
+                lines.extend([f'## {payload["role"]}', '', text, ''])
+    if last_only:
+        lines = last_assistant(lines)
+    return write_markdown(lines, nvim, tail)
+
+
+def codex_message_markdown(payload: dict) -> str:
+    """Return the readable text of one Codex message, without the wrappers around it.
+
+    A user turn also carries the instruction blocks Codex puts around the prompt, and those
+    start with `<` or name the project's AGENTS.md file; they are shown to nobody.
+    """
+    content = payload.get('content')
+    if not isinstance(content, list):
+        return ''
+    parts = []
+    for block in content:
+        if not isinstance(block, dict) or not isinstance(block.get('text'), str):
+            continue
+        text = block['text'].strip()
+        if not text or text.startswith('<') or text.startswith('# AGENTS.md'):
+            continue
+        parts.append(text)
+    return '\n'.join(parts).strip()
+
+
+def write_markdown(lines: list[str], nvim: str | None, tail: int | None) -> int:
+    """Print a rendered transcript, or open it in nvim, cut to its last lines."""
+    output = '\n'.join(lines).rstrip() + ('\n' if lines else '')
+    if tail:
+        output = '\n'.join(output.splitlines()[-tail:])
+    if nvim:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.md',
+                                         delete=False) as handle:
+            handle.write(output)
+            path = pathlib.Path(handle.name)
+        try:
+            return subprocess.run([nvim, str(path)], check=False).returncode
+        finally:
+            path.unlink(missing_ok=True)
+    sys.stdout.write(output)
+    return 0
+
+
+def pi_last_command(session: Session) -> list[str]:
+    """Return the pi-last command for one session, exactly the f4 view.
+
+    pi-last is named with this interpreter instead of being run through its
+    shebang: the chezmoi source file does not carry the executable bit, and a
+    child of a key binding gets a minimal PATH where `pi-last` may not resolve.
+    """
+    return [sys.executable, str(pi_last()), '--session', str(session.path), '--full']
+
+
+class RemoteRead(Exception):
+    """A read of a chat on a host failed, with the one line the reader needs."""
+
+
+def helper_message(stderr: bytes, fallback: str) -> str:
+    """Return one line from a helper's stderr, without the helper's own name."""
+    text = stderr.decode('utf-8', 'replace').strip()
+    if not text:
+        return fallback
+    line = text.splitlines()[0].strip()
+    if line.startswith('pib-open: '):
+        return line[len('pib-open: '):]
+    return line
+
+
+def remote_window_session(window: str, harness: str) -> dict[str, str] | None:
+    """Return the host and the session one window runs, or None when it runs here.
+
+    A key binding names a window, and kitty's own facts say nothing about another machine, so
+    the window's own ssh process is what names its host; `pib-open window-session` owns that
+    read.  A window that runs here, a window kitty does not know, and a window on a host the
+    picker does not read all answer with no host, and the local read follows exactly as it did
+    before.  Only a host the picker reads has to name a session, and it always does so or says
+    why not: the transcript of the directory the reader happened to ssh from is a different
+    chat, and showing it would be worse than the refusal.
+    """
+    if not window:
+        return None
+    try:
+        result = subprocess.run([sys.executable, str(pib_open()), 'window-session',
+                                 '--window', window, '--harness', harness, '--json'],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 2:
+        # The helper does not know the verb, which is what an older copy of it answers.  The
+        # window is then read here, exactly as it was before this verb existed, instead of
+        # showing the reader an argument-parser message.
+        return None
+    if result.returncode != 0:
+        raise RemoteRead(helper_message(result.stderr,
+                                        f'cannot read the session of window {window}'))
+    try:
+        answer = json.loads(result.stdout.decode('utf-8', 'replace') or '{}')
+    except ValueError:
+        return None
+    if not isinstance(answer, dict) or not str(answer.get('host') or ''):
+        return None
+    return {key: str(answer.get(key) or '')
+            for key in ('host', 'harness', 'session', 'file', 'cwd', 'name')}
+
+
+def fetch_transcript(server: str, path: str) -> bytes:
+    """Read one transcript's bytes from the host that holds it, exactly as it is stored."""
+    try:
+        result = subprocess.run([sys.executable, str(pib_open()), 'session-remote-file',
+                                 server, path],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RemoteRead(f'reading {path} on {server} took too long') from None
+    except OSError as error:
+        raise RemoteRead(f'cannot read {path} on {server}: {error}') from error
+    if result.returncode != 0:
+        raise RemoteRead(helper_message(result.stderr, f'cannot read {path} on {server}'))
+    return result.stdout
+
+
+def render_remote_session(source: dict[str, str], args: argparse.Namespace) -> int:
+    """Show a chat that runs on a host, through the reader this machine already has.
+
+    The bytes arrive as the host stores them, so the local reader renders them: `pi-last` for
+    a Pi chat, which is where the folds live, and this helper's own renderer for Claude Code
+    and Codex.  The file is a temporary copy for that reader, removed as soon as it returns;
+    `pi-last` is told the host's own path, so the view names the transcript that really holds
+    the chat rather than a copy that is already gone.
+    """
+    try:
+        data = fetch_transcript(source['host'], source['file'])
+    except RemoteRead as error:
+        return fail(f'pib: {error}')
+    suffix = pathlib.Path(source['file']).suffix or '.jsonl'
+    handle = tempfile.NamedTemporaryFile(mode='wb', suffix=suffix, delete=False)
+    path = pathlib.Path(handle.name)
+    try:
+        with handle:
+            handle.write(data)
+        if args.print_session:
+            # The path the host's own reads use, because that is the transcript this points at.
+            print(f'pib: session {source["host"]}:{source["file"]}', file=sys.stderr)
+        if source['harness'] == 'pi':
+            # The copy is read here, but the path a reader is told is the host's own, both in
+            # the header of a whole transcript and in the line that says nothing was written.
+            command = [sys.executable, str(pi_last()), '--session', str(path),
+                       '--display-path', source['file']]
+            if args.full:
+                command.append('--full')
+            if args.nvim:
+                command += ['--nvim', args.nvim]
+            return subprocess.run(command, check=False).returncode
+        session = Session(path=path, cwd=source['cwd'], name=source['name'], size=len(data),
+                          mtime=0.0, harness=source['harness'], identifier=source['session'])
+        if source['harness'] == 'claude':
+            return show_claude(session, args.nvim, None, last_only=not args.full)
+        return show_codex(session, args.nvim, None, last_only=not args.full)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def last_session(args: argparse.Namespace) -> int:
+    """Show the transcript of the session the given window runs.
+
+    The window is asked which store it runs, because the three stores are read by different
+    code and only the window knows which one is in front of the reader.  A Pi window is read
+    by pi-last, which already resolves a session from a window and is the one reader that can
+    do it from the session's own name.  A window that runs its chat on a host the picker
+    reads is answered from that host instead, and the store in that answer is the one the
+    window's own command line names there, so it can differ from the store guessed here: on a
+    host, this process sees only ssh.
+    """
+    window = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+    facts = window_facts(window) if window else {}
+    harness = args.harness or window_harness(facts.get('commands', []))
+    if harness not in ('pi', 'claude', 'codex'):
+        return fail(f'pib: unknown harness {harness!r}; expected one of pi, claude, codex')
+    try:
+        remote = remote_window_session(window, harness)
+    except RemoteRead as error:
+        return fail(f'pib: {error}')
+    if remote:
+        return render_remote_session(remote, args)
+    if harness == 'pi':
+        return run_pi_last(window, args)
+    cwd = facts.get('cwd') or os.getcwd()
+    session = newest_store_session(harness, cwd)
+    if session is None:
+        return fail(f'pib: no {harness_label(harness)} session for {cwd}')
+    if args.print_session:
+        # The chosen session is told the way pi-last tells it: on stderr, so a reader can
+        # still see the transcript it points at.
+        print(f'pib: session {session.path}', file=sys.stderr)
+    if harness == 'claude':
+        return show_claude(session, args.nvim, None, last_only=not args.full)
+    return show_codex(session, args.nvim, None, last_only=not args.full)
+
+
+def run_pi_last(window: str, args: argparse.Namespace) -> int:
+    """Hand a Pi window to pi-last with the flags this call arrived with.
+
+    pi-last resolves the session from the window itself, and it is asked rather than
+    reimplemented here because the name Pi publishes in the title is what keeps a second
+    session in the same project from being read instead of the one on screen.
+    """
+    command = [sys.executable, str(pi_last())]
+    if window:
+        command += ['--window', window]
+    if args.full:
+        command.append('--full')
+    if args.print_session:
+        command.append('--print-session')
+    if args.nvim:
+        command += ['--nvim', args.nvim]
+    return subprocess.run(command, check=False).returncode
+
+
+def copy_resume(session: Session, want_path: bool = False) -> int:
+    """Copy the command that resumes this session, or its transcript path."""
+    if want_path:
+        if session.harness == 'opencode':
+            return fail('pib: OpenCode sessions do not have transcript paths')
+        line = str(session.path)
+    elif session.harness == 'opencode':
+        command = f'opencode --session {shlex.quote(session.id)}'
+        line = (f'cd {shlex.quote(session.cwd)} && {command}'
+                if session.alive else command)
+    elif session.harness == 'claude':
+        # Claude Code resumes a session id from any directory, and a transcript by its
+        # absolute path when the project directory is gone.
+        command = f'claude --resume {session.id}'
+        line = (f'cd {shlex.quote(session.cwd)} && {command}' if session.alive
+                else f'claude --resume {shlex.quote(str(session.path))}')
+    elif session.harness == 'codex':
+        # Codex resumes a session id from any directory, so the directory only decides where
+        # the resumed chat starts.
+        command = f'codex resume {session.id}'
+        line = f'cd {shlex.quote(session.cwd)} && {command}' if session.alive else command
+    elif session.alive:
+        line = f'cd {shlex.quote(session.cwd)} && pi --session {session.id}'
+    else:
+        # The project directory is gone, so resume by transcript path instead.
+        line = f'pi --session {shlex.quote(str(session.path))}'
+    sys.stdout.write(line + '\n')
+    if shutil.which('pbcopy'):
+        subprocess.run(['pbcopy'], input=line.encode(), check=False)
+    if not session.alive and not want_path:
+        print(f'pib: {session.cwd} no longer exists; resuming from the transcript path',
+              file=sys.stderr)
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--sessions-dir', default=str(DEFAULT_SESSIONS_DIR),
+                        help='pi session root (default: %(default)s)')
+    common.add_argument('--harness', default='pi',
+                        help='session store: pi, opencode, claude, or codex; list also takes a '
+                             'comma-separated set, or all (default: %(default)s)')
+    parser = argparse.ArgumentParser(
+        prog='pib', description='Read and act on Pi, OpenCode, Claude Code, and Codex sessions.')
+    commands = parser.add_subparsers(dest='command', required=True)
+
+    listing = commands.add_parser('list', parents=[common],
+                                  help='write one row per session')
+    listing.add_argument('--json', action='store_true', help='write JSON instead of rows')
+    listing.add_argument('--named', action='store_true', help='only named sessions')
+    listing.add_argument('--live', action='store_true',
+                         help='mark sessions a running pi process may own (slower)')
+    listing.add_argument('--project', default='', help='only sessions under this path or name')
+
+    viewing = commands.add_parser('show', parents=[common],
+                                  help='print or open one transcript')
+    viewing.add_argument('id', help='session id, a transcript path, or an unambiguous prefix')
+    viewing.add_argument('--tail', type=int, default=0, help='print only the last N lines')
+    viewing.add_argument('--nvim', default=None, help='open it in this nvim')
+
+    renaming = commands.add_parser('rename', parents=[common],
+                                   help='rename a session, through pi')
+    renaming.add_argument('id', help='session id, a transcript path, or an unambiguous prefix')
+    renaming.add_argument('name', help='the new session name')
+    renaming.add_argument('--force', action='store_true',
+                          help='accepted for symmetry; a rename never needs it')
+
+    deleting = commands.add_parser('delete', parents=[common],
+                                   help='delete a transcript')
+    deleting.add_argument('id', help='session id, a transcript path, or an unambiguous prefix')
+    deleting.add_argument('--force', action='store_true',
+                          help='delete even when a pi process is running that session')
+
+    pruning = commands.add_parser('prune', parents=[common],
+                                  help='delete every session older than an age')
+    pruning.add_argument('--older-than', required=True, metavar='AGE',
+                         help='an age such as 1d, 3h, 10m, or 1d3h10m')
+    pruning.add_argument('--zmx', action='store_true',
+                         help='also end the zmx sessions older than the age')
+    pruning.add_argument('--yes', action='store_true',
+                         help='delete; without it the selection is only reported')
+    pruning.add_argument('--force', action='store_true',
+                         help='also delete a session a running pi process is still writing')
+    pruning.add_argument('--json', action='store_true', help='write JSON instead of rows')
+
+    copying = commands.add_parser('copy', parents=[common],
+                                  help='copy the resume command for one session')
+    copying.add_argument('id', help='session id, or an unambiguous prefix')
+    copying.add_argument('--path', action='store_true',
+                         help='copy the transcript path instead of a resume command')
+    projects = commands.add_parser('projects', help='list project directories from zoxide')
+    projects.add_argument('--json', action='store_true', help='write JSON instead of paths')
+    windowed = commands.add_parser(
+        'last', help='show the session the given kitty window runs')
+    windowed.add_argument('--window', default='',
+                          help='kitty window id, as the key binding passes it')
+    windowed.add_argument('--harness', default='',
+                          help='read this store instead of the one the window runs: '
+                               'pi, claude, or codex')
+    windowed.add_argument('--full', action='store_true',
+                          help='the whole transcript, not the last assistant message')
+    windowed.add_argument('--nvim', default=None, help='open it in this nvim')
+    windowed.add_argument('--print-session', action='store_true',
+                          help='write the chosen transcript to stderr')
+    stores = commands.add_parser('harnesses',
+                                 help='report which session stores this machine has')
+    stores.add_argument('--json', action='store_true', help='write JSON instead of rows')
+    stores.add_argument('--sessions-dir', default=str(DEFAULT_SESSIONS_DIR),
+                        help='pi session root (default: %(default)s)')
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+
+    if args.command == 'last':
+        return last_session(args)
+
+    if args.command == 'projects':
+        try:
+            result = subprocess.run([tool('zoxide'), 'query', '-l'], capture_output=True,
+                                    text=True, env=tool_env('zoxide'), check=False)
+        except OSError:
+            result = None
+        paths = [] if result is None or result.returncode != 0 else list(dict.fromkeys(
+            line for line in result.stdout.splitlines() if line and os.path.isdir(line)))
+        if args.json:
+            json.dump(paths, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            print('\n'.join(paths))
+        return 0
+
+    if args.command == 'harnesses':
+        report = harness_presence(pathlib.Path(args.sessions_dir).expanduser())
+        if args.json:
+            json.dump(report, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for store in report:
+                mark = 'present' if store['present'] else 'absent'
+                line = f'{store["harness"]:<9} {mark}'
+                if store['reason']:
+                    line += f'  ({store["reason"]})'
+                print(line)
+        return 0
+
+    # The prune is the one command that acts on a whole store rather than on one row, so it
+    # holds no id and comes before the direct-path branch below.
+    if args.command == 'prune':
+        return prune_command(args)
+
+    # A transcript path needs no store: the caller already knows the file.  This comes first
+    # because the preview asks for one path on every cursor move, and a full store scan
+    # would dominate that.
+    given = pathlib.Path(getattr(args, 'id', '')).expanduser()
+    if given.is_file():
+        # The recorded cwd is read here, because alive is derived from it and pi refuses to
+        # open a session whose project directory is gone.  Each store records it in its own
+        # way, so the harness the caller named picks the reader.
+        if args.harness == 'claude':
+            direct = Session(path=given, cwd=read_claude_session(given)[0], name='', size=0,
+                             mtime=0.0, harness='claude', identifier=given.stem)
+        elif args.harness == 'codex':
+            cwd, _, identifier = read_codex_session(given)
+            direct = Session(path=given, cwd=cwd, name='', size=0, mtime=0.0,
+                             harness='codex', identifier=identifier)
+        else:
+            direct = Session(path=given, cwd=recorded_cwd(given), name='', size=0, mtime=0.0,
+                             harness='pi')
+        if args.command == 'copy':
+            return copy_resume(direct, args.path)
+        if args.command == 'rename':
+            return rename_session(direct, args.name, args.force)
+        if args.command == 'delete':
+            return delete_session(direct, args.force)
+        return show(direct, args.nvim, args.tail)
+
+    # Which stores this call reads.  Only `list` takes more than one: a row is opened, renamed,
+    # or deleted through the store that holds it, and that store is named by the row itself.
+    requested = harness_set(args.harness) if args.command == 'list' else [args.harness]
+    if not requested:
+        return fail(f'pib: unknown harness {args.harness!r}; '
+                    f'expected one of {", ".join(HARNESSES)}')
+    sessions, failures = [], []
+    for harness in requested:
+        rows, reason = read_store(harness, args)
+        if reason:
+            failures.append((harness, reason))
+            continue
+        sessions.extend(rows)
+    if len(requested) > 1:
+        # A store that is not installed here is not a failed read: the caller asked for
+        # several stores and gets the ones this machine has.
+        for harness, reason in failures:
+            print(f'pib: skipping {harness_label(harness)}: {reason}', file=sys.stderr)
+        sessions.sort(key=lambda session: session.mtime, reverse=True)
+    if not sessions:
+        reason = empty_reason(requested, failures, args)
+        if args.command == 'list' and args.json:
+            # A picker reads a target with the stores it has, and a machine that holds none
+            # answers with no rows instead of stopping the read of that machine.  The reason
+            # is still told, on the channel a reader watches rather than the one a caller
+            # parses.
+            print(f'pib: {reason}', file=sys.stderr)
+            json.dump([], sys.stdout)
+            sys.stdout.write('\n')
+            return 0
+        return fail(f'pib: {reason}')
+
+    if args.command == 'list':
+        rows = sessions
+        if args.named:
+            rows = [session for session in rows if session.name]
+        if args.live and 'pi' in requested:
+            live = live_ids()
+            for session in rows:
+                session.live = session.id in live
+        if args.project:
+            wanted = args.project.rstrip('/')
+            rows = [session for session in rows
+                    if session.project == wanted or wanted in session.cwd]
+        if args.json:
+            json.dump([session.as_json() for session in rows], sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            now = time.time()
+            for session in rows:
+                print(session.row(now))
+        return 0
+
+    session, matches = select(sessions, args.id)
+    if session is None:
+        print(f'pib: {args.id} matched {len(matches)} sessions', file=sys.stderr)
+        for candidate in matches[:10]:
+            print(f'  {candidate.id}  {candidate.name or "(unnamed)"}', file=sys.stderr)
+        return fail(f'pib: {args.id} did not resolve to one session')
+    if args.command == 'copy':
+        return copy_resume(session, args.path)
+    if args.command == 'rename':
+        return rename_session(session, args.name, args.force)
+    if args.command == 'delete':
+        return delete_session(session, args.force)
+    return show(session, args.nvim, args.tail)
+
+
+if __name__ == '__main__':
+    try:
+        code = main(sys.argv[1:])
+    except BrokenPipeError:
+        # A reader went away early (pib show | head, or a pager quit).  Point
+        # stdout at /dev/null so the interpreter's final flush cannot raise
+        # again, and exit quietly.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    except KeyboardInterrupt:
+        code = 130
+    sys.exit(code)

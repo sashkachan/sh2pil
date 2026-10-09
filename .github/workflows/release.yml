@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, inc28]
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build archives
+        run: scripts/build-release.sh "$GITHUB_REF_NAME"
+
+      - name: Publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+
+      - name: Update the Homebrew tap
+        if: env.TAP_TOKEN != ''
+        run: scripts/update-tap.sh "$GITHUB_REF_NAME"
+
+      - name: Note the missing tap token
+        if: env.TAP_TOKEN == ''
+        run: echo "::warning::TAP_TOKEN is not set, so the Homebrew formula was not updated"

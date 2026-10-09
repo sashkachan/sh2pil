@@ -1,0 +1,3794 @@
+#!/usr/bin/env python3
+"""Open a terminal or an editor for one session: kitty, then tmux, then a printed command.
+
+Usage:
+    pib-open pi <cwd> <session> [--fork] [--name TITLE] [--force] [--label LABEL]
+            [--place WHERE] [--emit-cmd]
+    pib-open opencode <cwd> <session> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open claude <cwd> <session> [--fork] [--name TITLE] [--label LABEL]
+            [--place WHERE] [--emit-cmd]
+    pib-open codex <cwd> <session> [--fork] [--name TITLE] [--label LABEL]
+            [--place WHERE] [--emit-cmd]
+    pib-open new <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open opencode-new <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open claude-new <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open codex-new <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open shell <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open lazygit <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open yazi <cwd> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open editor-dir <cwd> [--editor COMMAND] [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open editor <transcript> [--editor PATH] [--emit-cmd]
+    pib-open switch <cwd> <session> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open attach <cwd> <session> [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open focus <session> [--emit-cmd]
+    pib-open retitle <session> [--name NAME] [--emit-cmd]
+    pib-open live [--json] [--sessions-dir DIR]
+    pib-open state [--json] [--live-dir DIR]
+    pib-open state-remote <ssh-destination> [--json]
+    pib-open zmx-list [--json]
+    pib-open zmx-connect <ssh-destination> [--check] [--no-wait]
+    pib-open zmx-remote-list <ssh-destination> [--json]
+    pib-open zmx-remote-projects <ssh-destination> [--json]
+    pib-open zmx-switch <name> [--server SSH-DEST] [--cwd DIR] [--place WHERE] [--emit-cmd]
+    pib-open zmx-remote-new <ssh-destination> <cwd> [--place WHERE] [--emit-cmd]
+    pib-open zmx-history <name> [--lines N]
+    pib-open zmx-kill <name> [--server SSH-DEST]
+    pib-open zmx-copy <name>
+    pib-open session-remote-list <ssh-destination> [--harness SET|all] [--live] [--json]
+    pib-open session-remote-show <ssh-destination> <session> [--harness STORE]
+            [--file PATH] [--tail N]
+    pib-open session-remote-open <ssh-destination> <cwd> [<session>] [--harness STORE]
+    pib-open session-remote-delete <ssh-destination> <session> [--harness STORE] [--force]
+    pib-open session-remote-prune <ssh-destination> --older-than AGE [--harness SET|all]
+            [--zmx] [--yes] [--json]
+            [--fork] [--name TITLE] [--label LABEL] [--place WHERE] [--emit-cmd]
+    pib-open session-remote-copy <ssh-destination> <session> [--harness STORE] [--cwd DIR]
+    pib-open tool-remote <ssh-destination> <cwd> <lazygit|yazi> [--label LABEL]
+            [--place WHERE] [--emit-cmd]
+    pib-open shell-remote <ssh-destination> <cwd> [--label LABEL] [--place WHERE]
+            [--emit-cmd]
+    pib-open editor-remote <ssh-destination> <cwd> [--editor NAME] [--label LABEL]
+            [--place WHERE] [--emit-cmd]
+    pib-open harnesses-remote <ssh-destination> [--json]
+    pib-open paste-remote <ssh-destination> [--emit-cmd]
+    pib-open paste-window [--window ID]
+    pib-open window-target [--window ID] [--json]
+    pib-open window-session [--window ID] [--harness STORE] [--json]
+    pib-open window-menu [--window ID] [--emit-cmd]
+
+`--place` says where an action runs: current (in this terminal pane), tab, window (its own OS
+window), or pane (a new split beside the one the picker is in).  Both pickers take that from
+one setting the reader cycles, so opening and forking behave alike.  tmux maps tab and window
+to a new window and pane to a split.
+
+`new` starts a fresh pi session in a directory, reusing no transcript: it is the verb for
+starting work in the project a picked session lives in.  A resume and a fork both carry a
+transcript forward, so neither of them can do this.  No label is set for it by default,
+because pi generates the session name and writes it into the window title itself.
+
+Four stores answer these verbs.  `pi` resumes or forks a Pi session, `opencode` resumes an
+OpenCode one, `claude` resumes or forks a Claude Code one, which takes `--resume <id>` and
+`--resume <id> --fork-session`, and `codex` resumes or forks a Codex one, which takes
+`codex resume <id>` and `codex fork <id>`.  `claude-new`, `codex-new`, and `opencode-new`
+start a chat in a directory, as `new` does for pi.  Only pi keeps a process-to-session
+record, so only `switch` can find the terminal that already runs a chat; a Claude Code or
+Codex resume opens a terminal and never asks about a second writer.
+
+`switch` is what the picker uses for a session: when a pi process already owns it, the
+terminal that runs it comes forward instead of a second pi joining the transcript; when
+nothing runs, it resumes.  A chat that runs in a zmx session with no terminal attached is
+neither: `switch` attaches to that session, because a resume would add a second writer to
+the transcript.  `attach` does only that half.  `focus` reports where the session runs and
+reports nothing to do (exit 1 nothing running, 2 running on a host this cannot reach).
+
+`sh2pil` calls this for its action keys, so the same actions work from the picker,
+from a plain shell, and from tmux.  The environment is detected in this order:
+
+    tmux    $TMUX is set -- the pane is the medium the caller is working in, so the new
+            terminal belongs there even when the pane sits inside kitty
+    kitty   a working `kitten @ ls` -- inside kitty the controlling terminal answers,
+            so no KITTY_* variables are needed, which is what a key-binding child has.
+            Outside kitty, the newest socket in /tmp that answers is used instead.
+    plain   print the command on stdout, for the caller to run
+
+Nothing fails silently: a missing socket, a dead directory, or a refused launch prints
+one line, and an interactive caller waits for a key before the message disappears.
+
+Tool commands run through an interactive login shell (see SHELL below), because a kitty
+child gets a PATH that holds neither `pi` nor `lazygit` nor the user's tools.  Every path
+travels as its own argv element, so a project directory with spaces stays intact.  A
+command that runs on another host is run in that host's own login shell, which is not
+necessarily this one: the shell is chosen there, so a host with bash and no zsh is read
+rather than refused.
+
+`editor` opens no terminal: it hands the current one to `pi-last --full --nvim`, the
+same view as the f4 binding, so the picker's overlay becomes the reader and `q` returns
+to the window.
+
+Live sessions: two pi processes on one transcript interleave writes, because a transcript
+is append-only and pi keeps no lock. The pib-live Pi extension writes a runtime record
+containing the transcript, pid, and process start time, and the state of the chat: which
+tool it is running, whether it is waiting on a person, or whether it has settled. `pib-open
+live` validates the record against the running Pi process; it never infers a session from its
+working directory or recent transcript writes. A state is believed only while its clock is
+fresh: a working state whose clock has stopped is reported as unknown, because a wedged
+process must not be shown as busy. A record written by an older extension carries no state,
+and then the record says only that the chat is live. Older processes without the extension
+cannot be identified; resuming in a directory with one of those processes asks for
+confirmation.
+
+`pib-open state` reads what every registered chat is doing and nothing else. It is the cheap
+half of `live`: no process check, no window scan, and no transcript read, so a picker can ask
+it often and follow a state on a clock. It validates nothing, and the caller keeps its answer
+beside the one `live` gave, which is the read that decides whether a chat is live at all.
+
+zmx sessions: the `zmx` key in the shared config (~/.config/sh2pil/config.yaml) runs a new,
+resumed, or forked Pi chat inside a zmx session of its own, so the chat outlives the window
+it was started in.  Every launch takes a fresh name, because `zmx attach` upserts and a name
+that is already taken would join the running session instead.  The session is labelled as it
+is created: `pi=<session id>` and `project=<directory name>`.  zmx allows only letters,
+digits, and `-_.` in a label value, which is why the project is a name and not a path.
+
+A zmx session runs its process in a session of its own (a double fork and setsid), so the
+window that shows it is nowhere in pi's process ancestry, and the ancestry match that finds
+every other terminal cannot find this one.  The `pi=` label is then the only link: `focus`,
+`switch`, and `retitle` ask zmx which window the session is attached to.  A shell, lazygit,
+yazi, or an editor gets no session, because only a chat is worth keeping alive across
+terminals.
+
+Two details follow from that. A chat opened in the picker's own terminal keeps its zmx
+client there until the user detaches; the zmx session then keeps running and can be attached
+again later. A `current` placement therefore stays in the current terminal. And no title is
+pinned for a chat: pi names its own window `π - <session name> - <project>`, and kitty's
+--title/--tab-title would freeze the label a launch passes, which is how a resumed chat kept
+showing a short session id.
+
+The picker's zmx list comes from here too.  `zmx-list` prints one row per session: the name
+zmx knows, the chat its `pi=` label points at, the directory it runs in, and how many clients
+are attached.  `zmx-history` prints the end of a session's own scrollback, which is what the
+picker previews for a session that carries no chat.  `zmx-switch` is `switch` for one of
+those rows: it brings the window that shows the session forward, and attaches a new client
+when nothing shows it.  `zmx-kill` ends a session and everything it runs, and `zmx-copy`
+prints the command that attaches to it.
+
+Remote sessions: the hosts the picker knows are asked for their own sessions, and those rows
+stand beside the local ones with the host in a column of its own.  `session-remote-list` runs
+`pib list --json` on the host, so a remote row carries the same fields a local one does.
+`session-remote-show` renders a remote transcript with the host's own `pi-last`, the reader
+behind the f4 binding, straight from the path that host reported, so the preview pane shows
+remote text the way it shows local text.  `session-remote-file` prints that transcript's own
+bytes instead of a rendering, because the reader behind the f3 and f4 bindings runs in the
+window the reader is in, which is this machine: the bytes travel and this machine's own
+`pi-last` or `pib show` renders them, so a host needs nothing installed for the read and one
+version of the renderer owns the view.
+`window-session` is the read those bindings start with: it names the host one kitty window
+runs on, and the session of that host that the window runs, from the window's own ssh process,
+the one command that ssh runs there, and its title.  That command is where the store is read
+too: a chat on a host is opened by one ssh command that runs the tool which starts it, so a
+Claude Code or a Codex window on a host is read as that store rather than as Pi, and a chat
+that resumes a session is named by the id its own command line carries.
+`session-remote-open` opens an SSH terminal that resumes, forks, or starts a
+chat in the remote project: this picker cannot switch to a window on another host, so every
+remote action opens a new terminal, and the remote pi titles it over the SSH pty.  `session-remote-copy` prints the same command for the clipboard.  
+`session-remote-delete` removes a transcript on the host itself, because the store is the
+host's and its own pib is what resolves the id there; the rest of the remote store is left
+alone, so renaming and editing a remote transcript stay with the host.
+`tool-remote` runs one directory tool on the host for the same reason: yazi and lazygit act
+on the files they show, and a host's files are on that host.  lazygit is given the project
+directory and finds the repository that holds it itself, because a path this machine cannot
+see cannot be resolved here.  The host is asked once, before a terminal is opened, whether
+the directory is there and the tool is installed, because a terminal closes at once when the
+tool inside it cannot start; a host that cannot be reached is not refused by that question,
+and its own terminal carries the reason.
+`shell-remote` opens the host's own login shell in the host's own directory, interactive and
+with no command, which is what a shell opened here is.  Only the directory is checked, and
+no zmx session is made for it: only a chat is worth keeping alive across terminals, and a
+zmx session is tied to the chat it runs by the `pi=` label it carries.
+`editor-remote` opens one directory in the host's own editor, which is its `$EDITOR` when it
+has one and nvim otherwise: an editor is a machine's own tool, with its own plugins and its
+own clipboard, so no path from this machine travels with it.  The editor the host would use
+is the one the check looks for.
+
+An image on this machine's clipboard reaches a chat on another host through `paste-remote`
+and `paste-window`, which the `cmd+shift+v` binding calls.  A chat reads the clipboard of the
+machine it runs on, so a chat on a host has no clipboard to read: over SSH, Pi, Claude Code,
+and Codex all find nothing there.  The image is therefore written into a file on the host and
+the file's path is typed into the window that runs the chat, because every store takes a path
+-- Pi inserts one itself when it pastes.  The path is one file in `$TMPDIR/pib-paste` on the
+host, mode 700 and pruned after a day, and nothing else there is touched.
+
+The host is read from the window's own processes, never named by the caller, so one key works
+on a row of every host the picker knows: the `ssh` command line kitty reports for the window
+carries the destination the session was opened with.  A window whose session runs on this
+machine gets the path of a temporary file here instead, which is what Pi's own `ctrl+v`
+inserts.  With no image on the clipboard the terminal's own paste runs, so the key stays a
+paste key in every case.
+
+`window-target` and `window-menu` answer the `cmd+.` binding, which opens the picker's
+next-step menu for the window the reader is in.  The window itself says which host and which
+project the menu applies to: the `ssh` destination comes from its own processes, the same
+read `paste-window` uses, and the directory comes from the zmx session the window holds a
+client for, from the chat the window runs, or from kitty's own answer for a local window.
+Only a host the picker already reads is accepted -- an `ssh` to a destination outside
+`zmx_servers` is refused rather than guessed at -- and a window none of those rules places is
+refused too, in one line the reader can act on.  `window-menu` then hands the resolved
+target to `sh2pil --menu`, which draws the same menu the dot key draws inside the picker.
+
+A host is not required to run these dotfiles.  Each read looks for the helper in PATH and then
+in ~/.local/bin, and when the host has neither, the helper's code travels to it over the
+connection instead: `python3 -` runs the script that arrives on standard input, so nothing is
+installed and nothing is written on the host.  Both ends then run one version of the code.
+A host that has a copy of its own is read through that copy, because it matches the host; when
+that copy is too old to answer the read, the same read is made with the code this picker
+ships, which reads the same store on that host.  So a machine whose dotfiles are one update
+behind still shows its rows here instead of an error about a store its pib never heard of.
+The one thing such a host cannot say is which of its sessions its own pi processes run, since
+only a host with the whole toolchain has `pib-open` to answer that: its rows carry no live
+mark.  A path in `--file` keeps a Pi read to one transcript instead of a scan of the store.
+
+Switching to a running session needs one more step: finding the terminal that holds it.
+Each medium is asked for its own list (kitty `ls`, tmux `list-panes`), the process ids it
+reports are matched against the pi process, and the match is focused with that medium's
+own command.  Every other part of this helper and both pickers key on the session id and
+the process id, so a terminal is never assumed and a new one is one small adapter.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import os
+import pathlib
+import re
+import secrets
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+
+SHELL = 'zsh'
+DEFAULT_EDITOR = 'nvim'
+
+# The session stores a host can be asked for, and the default one.  `pib list --harness` takes
+# the same names, so one name means one store on every host.  `pib-open session-remote-list`
+# also takes a comma-separated set, or `all`, which is how the picker reads a host's rows from
+# every store it was told to show.
+SESSION_HARNESSES = ('pi', 'opencode', 'claude', 'codex')
+
+# Where a crash is written down.  Nothing here fails silently on purpose, but a traceback is
+# the one failure that does: a picker runs this helper with the terminal released, so the text
+# is gone as soon as the picker draws again, and the terminal this helper opens closes at
+# once when the tool inside it cannot start.  The log keeps the cause after both are gone.
+# A paste from a key binding is written here too: that child has no screen at all.
+LOG = pathlib.Path.home() / '.local/state/pib-open/errors.log'
+
+SESSIONS_DIR = pathlib.Path.home() / '.pi/agent/sessions'
+LIVE_DIR = pathlib.Path.home() / '.local/state/pib-open/live'
+
+# The state the pib-live Pi extension publishes beside the transcript, so that a reader can
+# say what a chat is doing and not merely that it exists.  A record is a status label: a
+# state, a tool name, a dialog kind, and the dialog's own short label.  None of it is
+# content, so a state can be shown without leaking a prompt.
+LIVE_STATES = ('starting', 'working', 'tool', 'blocked', 'idle', 'ended')
+
+# Only a chat that is working refreshes its clock while it lasts, so only a working state can
+# go stale: a chat that is blocked or idle is supposed to stand still.
+LIVE_WORKING_STATES = ('working', 'tool')
+
+# How long a working state is believed without a fresh clock.  A process that is alive but
+# wedged would otherwise read as busy forever, which is the one lie this plane must not tell.
+LIVE_STATE_STALE = 90
+
+# The sh2pil setting file.  Both programs read the same file, so one flag means one thing:
+# the Go picker looks for its own keys and ignores the rest, and so does this helper.
+CONFIG = pathlib.Path.home() / '.config/sh2pil/config.yaml'
+
+# zmx ships in several places, and a kitty key-binding child has a PATH that holds only
+# kitty, /usr/bin, and /bin, so the plain name is tried first and the usual install
+# locations after it.
+ZMX_CANDIDATES = (
+    'zmx',
+    str(pathlib.Path.home() / '.local/share/mise/shims/zmx'),
+    '/opt/homebrew/bin/zmx',
+    str(pathlib.Path.home() / '.local/bin/zmx'),
+)
+
+# Actions that get a zmx session of their own.  `pi` covers a resume and a fork, because
+# `--fork` is a flag on it; `new` starts a chat from a project row.  Only Pi is wrapped: a
+# zmx session carries a `pi=` label, and that label is what the picker reads to tie a zmx
+# session to the chat it runs, so a Codex or Claude Code resume gets a plain terminal.
+ZMX_ACTIONS = ('pi', 'new')
+
+# Tool commands run as `zsh -lic`: interactive so dot_zshrc is read, login so the login
+# files are read too.  A kitty child starts with
+# PATH=/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin, and this repo
+# keeps the Homebrew PATH in dot_zshrc with no .zprofile at all, so a plain `zsh -lc`
+# cannot find pi, node, or lazygit.  Measured 2026-09-26: `zsh -lc 'command -v pi'`
+# printed nothing, `zsh -lic 'command -v pi'` printed /opt/homebrew/bin/pi.
+
+
+def fail(message: str, wait: bool = True) -> int:
+    """Report a problem, and keep it on screen when a person is watching.
+
+    An overlay closes the moment the child exits, so a message on stderr would vanish
+    before it could be read.  Wait for a key only when stdin is a terminal.  A caller that
+    wants to act on the failure itself -- the picker, which retries a connect -- passes
+    wait=False, or the keypress would stop it.
+    """
+    print(message, file=sys.stderr)
+    if wait and sys.stdin.isatty():
+        print('pib-open: press Enter to close', file=sys.stderr)
+        try:
+            sys.stdin.readline()
+        except (KeyboardInterrupt, OSError):
+            pass
+    return 1
+
+
+def note_crash() -> None:
+    """Report a crash twice: on stderr, and in a log that outlives the window."""
+    text = traceback.format_exc()
+    sys.stderr.write(text)
+    stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open('a', encoding='utf-8') as handle:
+            handle.write(f'--- {stamp} {shlex.join(sys.argv)}\n{text}')
+    except OSError:
+        pass
+
+
+def note_failure(message: str) -> None:
+    """Write one failure to the state log, for a caller that has no screen.
+
+    A key-binding child has no terminal and no window: its stderr goes where nobody reads it,
+    so a failure only a person can fix is also written where it outlives the keystroke.
+    """
+    stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open('a', encoding='utf-8') as handle:
+            handle.write(f'--- {stamp} {message}\n')
+    except OSError:
+        pass
+
+
+def pi_processes() -> list[tuple[int, str, str]]:
+    """Return (pid, cwd, argv) for every live pi process, best effort.
+
+    pi rewrites its process title to `pi`, so `ps` shows no arguments, and it keeps no
+    transcript open, so `lsof` yields only the working directory.  That directory is the
+    whole handle, and this function stays deliberately simple.
+    """
+    found: list[tuple[int, str, str]] = []
+    try:
+        listing = subprocess.run(['ps', '-eo', 'pid=,command='], capture_output=True)
+    except OSError:
+        return found
+    for line in listing.stdout.decode('utf-8', 'replace').splitlines():
+        pid, _, command = line.strip().partition(' ')
+        command = command.strip()
+        if not pid.isdigit() or not command:
+            continue
+        if os.path.basename(command.split()[0]) != 'pi':
+            continue
+        cwd = ''
+        try:
+            handles = subprocess.run(['lsof', '-a', '-p', pid, '-d', 'cwd', '-Fn'],
+                                     capture_output=True)
+            for handle_line in handles.stdout.decode('utf-8', 'replace').splitlines():
+                if handle_line.startswith('n'):
+                    cwd = handle_line[1:]
+                    break
+        except OSError:
+            pass
+        found.append((int(pid), cwd, command))
+    return found
+
+
+def recorded_cwd(path: pathlib.Path) -> str:
+    """Return the cwd that a transcript header records, or ''."""
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            value = json.loads(handle.readline()).get('cwd')
+    except (OSError, ValueError):
+        return ''
+    return value if isinstance(value, str) else ''
+
+
+def session_id(path: pathlib.Path) -> str:
+    """Return the session uuid that a transcript file name carries."""
+    return path.stem.split('_', 1)[-1]
+
+
+def session_name(path: pathlib.Path) -> str:
+    """Return the last name pi stored for one session, or ''."""
+    name = ''
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                if '"session_info"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get('type') == 'session_info':
+                    value = entry.get('name')
+                    name = value if isinstance(value, str) else ''
+    except OSError:
+        return ''
+    return ' '.join(name.split())
+
+
+def squeeze(value: str) -> str:
+    """Collapse whitespace, so a title and a stored name compare equal."""
+    return ' '.join(value.split())
+
+
+# --- where a running session lives ----------------------------------------------------
+#
+# A terminal is never assumed.  Each medium is asked for the processes it can see, and the
+# answer is matched against the pi process ids.  Adding a medium means adding one function
+# that lists its windows and one line that focuses one.
+
+
+def kitty_windows(prefix: list[str]) -> list[dict]:
+    """Return one entry per kitty window, with the process ids it reports."""
+    result = subprocess.run(prefix + ['ls'], capture_output=True)
+    if result.returncode != 0:
+        return []
+    try:
+        os_windows = json.loads(result.stdout)
+    except ValueError:
+        return []
+    windows = []
+    for os_window in os_windows:
+        for tab in os_window.get('tabs', []):
+            for window in tab.get('windows', []):
+                pids = [window.get('pid')]
+                commands = []
+                for process in window.get('foreground_processes', []):
+                    pids.append(process.get('pid'))
+                    if process.get('cmdline'):
+                        commands.append(process['cmdline'])
+                windows.append({
+                    'medium': 'kitty',
+                    'label': f'kitty window {window.get("id")}',
+                    'target': str(window.get('id')),
+                    'title': window.get('title', ''),
+                    'cwd': window.get('cwd', ''),
+                    'pids': [pid for pid in pids if isinstance(pid, int)],
+                    'commands': commands,
+                    'prefix': prefix,
+                })
+    return windows
+
+
+def tmux_panes() -> list[dict]:
+    """Return one entry per tmux pane, with the process tree under it."""
+    try:
+        listing = subprocess.run(['tmux', 'list-panes', '-a', '-F',
+                                  '#{pane_pid}\t#{session_name}:#{window_index}'
+                                  '.#{pane_index}\t#{pane_title}'],
+                                 capture_output=True)
+    except OSError:
+        return []
+    if listing.returncode != 0:
+        return []
+    children = process_children()
+    panes = []
+    for line in listing.stdout.decode('utf-8', 'replace').splitlines():
+        parts = line.split('\t')
+        if not parts or not parts[0].isdigit():
+            continue
+        pids = descendants(int(parts[0]), children)
+        panes.append({'medium': 'tmux', 'label': f'tmux {parts[1]}', 'target': parts[1],
+                      'title': parts[2] if len(parts) > 2 else '', 'cwd': '', 'pids': pids})
+    return panes
+
+
+def process_children() -> dict[int, list[int]]:
+    """Return a parent-to-children map of every process, for the tmux pane walk."""
+    children: dict[int, list[int]] = {}
+    try:
+        listing = subprocess.run(['ps', '-eo', 'pid=,ppid='], capture_output=True)
+    except OSError:
+        return children
+    for line in listing.stdout.decode('utf-8', 'replace').splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    return children
+
+
+def descendants(root: int, children: dict[int, list[int]]) -> list[int]:
+    """Return root and everything below it."""
+    found = [root]
+    stack = [root]
+    while stack:
+        for child in children.get(stack.pop(), []):
+            found.append(child)
+            stack.append(child)
+    return found
+
+
+def session_windows(pids: list[int]) -> list[dict]:
+    """Return the terminals that hold one of these processes, best effort."""
+    if not pids:
+        return []
+    prefix = kitten_prefix()
+    return match_windows((kitty_windows(prefix) if prefix else []) + tmux_panes(), pids)
+
+
+def zmx_pi_sessions() -> dict[str, str]:
+    """Map a pi session id to the zmx session that carries it, through the `pi=` label.
+
+    Labels are runtime state and last as long as the session, so an ended session simply
+    stops answering.  `zmx list` prints them as extra `key=value` columns.
+    """
+    mapping: dict[str, str] = {}
+    for line in zmx_run(['list']).splitlines():
+        fields = line.split()
+        name = next((field[len('name='):] for field in fields
+                     if field.startswith('name=')), '')
+        identifier = next((field[len('pi='):] for field in fields
+                           if field.startswith('pi=')), '')
+        if name and identifier:
+            mapping.setdefault(identifier, name)
+    return mapping
+
+
+def zmx_window(identifier: str, target: str = '', windows: list[dict] | None = None) -> dict | None:
+    """Return the kitty window attached to the zmx session that runs this pi session.
+
+    A zmx session runs its process in a session of its own, so the window that shows it is
+    nowhere in pi's ancestry.  The `pi=` label set from inside the session is the only link,
+    and the window zmx tracks for that session is the one to focus.  `windows` lets a caller
+    that already listed them pass them in instead of asking kitty again.
+    """
+    name = zmx_pi_sessions().get(identifier, '')
+    if not name:
+        return None
+    return zmx_client_window(name, target, windows)
+
+
+def zmx_client_window(name: str, target: str = '',
+                      windows: list[dict] | None = None) -> dict | None:
+    """Return the kitty window whose client is attached to this zmx session.
+
+    `zmx print-env` reports the window the session was started in, which goes stale once
+    that window has moved on: the window still has to hold a client for this session, so
+    the commands kitty reports for it are checked before it is offered as a match.
+    """
+    window_id = zmx_run(['print-env', name, 'KITTY_WINDOW_ID']).strip()
+    if not window_id.isdigit() or (target and target != window_id):
+        return None
+    if windows is None:
+        prefix = kitten_prefix()
+        if not prefix:
+            return None
+        windows = kitty_windows(prefix)
+    for window in windows:
+        if window['target'] != window_id:
+            continue
+        commands = window.get('commands')
+        if commands and not any(
+                os.path.basename(argv[0]) == 'zmx' and name in argv
+                for argv in commands if argv):
+            # The window has moved on: nothing in it is attached to this session, so the
+            # tracked window id is stale.  An attach beats focusing the wrong window.
+            return None
+        window['label'] = f'kitty window {window_id} (zmx {name})'
+        return window
+    return None
+
+
+# --- the zmx list the picker shows ------------------------------------------------------
+#
+# A session that runs in zmx outlives the window it was started in, so the picker lists the
+# sessions themselves and not the terminals: a row is a session to attach to, or to kill,
+# whether or not a window shows it at the moment.
+
+
+def transcript_for(identifier: str, root: pathlib.Path | None = None) -> str:
+    """Return the transcript path of a pi session id, or '' when there is none.
+
+    A transcript is named `<timestamp>_<id>.jsonl` under its project directory.  A deleted
+    session has no file, and its row then shows what the session is instead of a preview.
+    """
+    if not identifier:
+        return ''
+    for path in sorted((root or SESSIONS_DIR).glob(f'*/*_{identifier}.jsonl')):
+        return str(path)
+    return ''
+
+
+def zmx_cwd(value: str) -> str:
+    """Turn the file URL zmx reports into a path: file://host/Users/me -> /Users/me."""
+    if not value.startswith('file://'):
+        return value
+    rest = value[len('file://'):]
+    slash = rest.find('/')
+    return rest[slash:] if slash >= 0 else rest
+
+
+def zmx_fields(line: str) -> dict[str, str]:
+    """Return the `key=value` columns of one `zmx list` line.
+
+    Columns are tab separated, and one value may hold spaces: `cmd=pi --fork 1 --name 'Fix
+    ingress docs'` is a single column.  The line starts with the arrow zmx prints for the
+    session the caller runs inside, and a two-space indent for every other session.
+    """
+    values: dict[str, str] = {}
+    for field in line.split('\t'):
+        key, separator, value = field.lstrip(' \u2192').partition('=')
+        if separator:
+            values[key] = value
+    return values
+
+
+def zmx_sessions() -> list[dict]:
+    """Return one entry per zmx session, newest first.
+
+    The `pi=` label links a session to the chat running inside it, which is what the picker
+    names the row after and what its preview reads.  A session started as a plain command
+    carries no label and no transcript yet; its row stands on its own name.
+    """
+    entries = []
+    for line in zmx_run(['list']).splitlines():
+        if not line.strip():
+            continue
+        values = zmx_fields(line)
+        name = values.get('name', '')
+        if not name:
+            continue
+        identifier = values.get('pi', '')
+        transcript = transcript_for(identifier) if identifier else ''
+        entries.append({
+            'name': name,
+            'chat': session_name(pathlib.Path(transcript)) if transcript else '',
+            'pi': identifier,
+            'project': values.get('project', ''),
+            'cmd': values.get('cmd', ''),
+            'cwd': zmx_cwd(values.get('cwd', '')),
+            'file': transcript,
+            'clients': int(values['clients']) if values.get('clients', '').isdigit() else 0,
+            'created': int(values['created']) if values.get('created', '').isdigit() else 0,
+            'current': line.lstrip().startswith('\u2192'),
+        })
+    entries.sort(key=lambda entry: entry['created'], reverse=True)
+    return entries
+
+
+def config_entries() -> list[tuple[str, str]]:
+    """Return every key and value of the shared config, in file order.
+
+    The file is shared: the Go picker reads the keys it owns, this helper reads its own, and
+    each ignores the rest, so one setting means one thing in one place.  A comment runs to the
+    end of the line, and a later line of the same key overrides an earlier one.
+    """
+    try:
+        lines = CONFIG.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return []
+    entries: list[tuple[str, str]] = []
+    for line in lines:
+        name, separator, raw = line.split('#', 1)[0].strip().partition(':')
+        if separator:
+            entries.append((name.strip(), raw.strip()))
+    return entries
+
+
+def config_value(key: str, default: str = '') -> str:
+    """Read one scalar setting from the shared sh2pil config."""
+    value = default
+    for name, raw in config_entries():
+        if name == key:
+            value = raw
+    return value
+
+
+# The environment a session on a host is given.  `ssh_env` names the variables every host
+# gets, and `ssh_env.<destination>` adds to or overrides them for one host: a terminal this
+# machine opens is still its own terminal, and a host with no terminfo entry for the
+# terminal's name needs the session to describe itself as one the host does know.  The
+# destination is matched exactly as written, because that is the string the picker passes
+# with every command.
+ENV_KEY = 'ssh_env'
+ENV_PREFIX = ENV_KEY + '.'
+ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+def env_pairs(raw: str) -> list[tuple[str, str]]:
+    """Split one comma-separated NAME=value setting, dropping what cannot be a variable."""
+    pairs: list[tuple[str, str]] = []
+    for item in raw.split(','):
+        name, separator, value = item.strip().partition('=')
+        name, value = name.strip(), value.strip()
+        if not separator or not ENV_NAME.fullmatch(name):
+            # A typo must not cost a session: the reader is told, and the rest still runs.
+            print(f'pib-open: ignoring ssh_env entry {item.strip()!r}; wanted NAME=value',
+                  file=sys.stderr)
+            continue
+        pairs.append((name, value))
+    return pairs
+
+
+def remote_env(server: str) -> list[tuple[str, str]]:
+    """Return the variables one host's session is given, as NAME=value, in configured order.
+
+    The shared setting comes first, so every host gets it, and the host's own setting comes
+    after and replaces the variables it names without dropping the rest.  The name is
+    `remote_env`, not `ssh_env`, because the local ssh process has an environment of its own
+    (`ssh_env` below) that is a different thing entirely.
+    """
+    shared: list[tuple[str, str]] = []
+    per_host: list[tuple[str, str]] = []
+    for key, raw in config_entries():
+        if key == ENV_KEY:
+            shared += env_pairs(raw)
+        elif key == ENV_PREFIX + server:
+            per_host += env_pairs(raw)
+    values: dict[str, str] = {}
+    order: list[str] = []
+    for name, value in shared + per_host:
+        if name not in values:
+            order.append(name)
+        values[name] = value
+    return [(name, values[name]) for name in order]
+
+
+def with_remote_env(server: str, remote: str) -> str:
+    """Put one host's configured environment in front of one remote command.
+
+    The exports run first, in the same POSIX sh the rest of the command runs in, so the login
+    shell the command execs, and everything it starts, inherit them.  The value is quoted, so
+    it reaches the host exactly as it was written here.  A read-only question is left alone:
+    it is not a session anyone works in.  A host with no exported variable, and a session
+    whose command needs none, is unchanged.
+    """
+    exports = ''.join(f'export {name}={shlex.quote(value)}; '
+                      for name, value in remote_env(server))
+    return exports + remote
+
+
+def remote_zmx_command(*arguments: str) -> str:
+    """Build the remote shell command with PATH, mise-shim, and config fallback."""
+    override = config_value('zmx_remote_binary')
+    if override:
+        if override.startswith('~/'):
+            binary = '"$HOME"/' + shlex.quote(override[2:])
+        elif override.startswith('/'):
+            binary = shlex.quote(override)
+        else:
+            raise ValueError('zmx_remote_binary must be an absolute path or start with ~/')
+        return 'exec ' + binary + ' ' + shlex.join(list(arguments))
+
+    command = shlex.join(list(arguments))
+    return ('if command -v zmx >/dev/null 2>&1; then exec zmx ' + command +
+            '; elif [ -x "$HOME/.local/share/mise/shims/zmx" ]; then '
+            'exec "$HOME/.local/share/mise/shims/zmx" ' + command +
+            '; else echo "zmx not found in PATH or mise shims" >&2; exit 127; fi')
+
+
+def valid_ssh_destination(server: str) -> bool:
+    """Accept an SSH config alias or user@host/IP, but not an option-like value."""
+    if re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', server):
+        return True
+    user, separator, host = server.partition('@')
+    if not separator or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', user):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        # DNS names and simple SSH hostnames are allowed; shell and SSH option
+        # characters are not. Each DNS label must start and end with a letter/number.
+        label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+        return all(re.fullmatch(label, part) for part in host.rstrip('.').split('.'))
+
+
+def ssh_binary() -> str:
+    """Prefer Homebrew OpenSSH, which can use the managed FIDO-capable agent."""
+    for candidate in ('/opt/homebrew/bin/ssh', '/usr/local/bin/ssh'):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which('ssh') or 'ssh'
+
+
+def ssh_env() -> dict[str, str]:
+    """Use the Homebrew agent socket even when Kitty starts us with a minimal env."""
+    env = os.environ.copy()
+    agent = pathlib.Path.home() / '.ssh' / 'agent.sock'
+    if agent.exists():
+        env['SSH_AUTH_SOCK'] = str(agent)
+    return env
+
+
+def ssh_control_path() -> str:
+    """Keep the YubiKey-only master socket short and separate from old masters."""
+    return str(pathlib.Path.home() / '.ssh' / 'pib-sk-%C')
+
+
+# How many times a connect is tried before the reader is told it failed.  ~/.ssh/config
+# lists two YubiKey identities with IdentitiesOnly, before any plain key: when the second
+# token is inserted, ssh offers the first identity, that attempt is rejected, and ssh moves
+# to the token that is present.  The rejected attempts can exhaust MaxAuthTries first, and a
+# second attempt then succeeds, so the failure is retried rather than reported.
+CONNECT_ATTEMPTS = 3
+
+# The ssh wording that means another attempt could succeed.  A name that does not resolve, a
+# refused port, and a connection that times out are absent on purpose: retrying those only
+# holds the picker for another ConnectTimeout.
+RETRYABLE_CONNECT = (
+    'Permission denied (publickey)',
+    'Too many authentication failures',
+    'MaxAuthTries',
+    'Connection closed by',
+    'Connection reset by',
+)
+
+
+def last_line(text: str) -> str:
+    """Return the last line of text that is not blank, so a failure reports its reason."""
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()
+    return ''
+
+
+def retryable_connect(reason: str) -> bool:
+    """Say whether another attempt could succeed where this one failed."""
+    return any(word in reason for word in RETRYABLE_CONNECT)
+
+
+def zmx_connect(server: str, check_only: bool = False, wait: bool = True,
+                restart: bool = False) -> int:
+    """Establish or reuse a persistent SSH master; this may prompt for YubiKey touch.
+
+    With check_only, answer only whether a master already exists: exit 0 when it does and 1
+    when it does not, and touch nothing else.  The picker asks that question on the normal
+    helper path, where a terminal handover would repaint the whole screen for a 50 ms
+    question, and runs this verb for real only when the answer is no.
+    """
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host', wait)
+    control = ssh_control_path()
+    try:
+        check = subprocess.run([ssh_binary(), '-S', control, '-O', 'check', server],
+                               capture_output=True, timeout=5, env=ssh_env())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return fail(f'pib-open: could not check the SSH master for {server}: {error}', wait)
+    if check.returncode == 0 and not restart:
+        return 0
+    if check_only and not restart:
+        return 1
+    if restart:
+        # A recreate is asked for when a master is stale, was killed, or holds the wrong
+        # socket: end it first so the establish below always makes a new one.  A failing exit
+        # is not an error, because there may be no master to end.
+        subprocess.run([ssh_binary(), '-S', control, '-O', 'exit', server],
+                       capture_output=True, timeout=5, env=ssh_env())
+    command = [
+        ssh_binary(), '-M', '-N', '-f', '-o', 'ControlMaster=yes',
+        '-o', 'ControlPersist=12h', '-o', 'ControlPath=' + control,
+        '-o', 'ConnectTimeout=10', '-o', 'PreferredAuthentications=publickey',
+        '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no',
+        '-o', 'BatchMode=no', server,
+    ]
+    reason = ''
+    for attempt in range(1, CONNECT_ATTEMPTS + 1):
+        if attempt > 1:
+            print(f'pib-open: retrying the connection to {server} '
+                  f'(attempt {attempt} of {CONNECT_ATTEMPTS})', file=sys.stderr)
+            sys.stderr.flush()
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.PIPE, text=True, env=ssh_env())
+        except OSError as error:
+            return fail(f'pib-open: could not connect to {server}: {error}', wait)
+        # ssh's own words are relayed as they arrive: the picker's UI is suspended for this
+        # command, and a touch or passphrase prompt must reach the reader while it still can
+        # be answered.  The lines are kept as well, because the reason for a failure is the
+        # only thing that says whether another attempt is worth making.
+        told = []
+        for line in process.stderr:
+            told.append(line)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        # No timeout of our own: the touch is what this waits for, and only the reader knows
+        # when the token will be pressed.  ConnectTimeout bounds the network part.
+        if process.wait() == 0:
+            return 0
+        reason = last_line(''.join(told))
+        if not retryable_connect(reason) or attempt == CONNECT_ATTEMPTS:
+            break
+    detail = f': {reason}' if reason else ''
+    return fail(f'pib-open: could not establish the SSH master for {server}{detail}', wait)
+
+
+# The login shells a remote command may be run in, in the order they are tried.  The host's
+# shell is not necessarily this machine's, and a command that names one the host does not
+# have fails with "No such file or directory" before it reaches the tool at all: fedora has
+# bash and no zsh, and its project list came back as that error.  zsh comes first because
+# this repo keeps its interactive PATH in dot_zshrc, so a Mac reads exactly as it did; bash
+# and then sh follow, so a host that has only those is read instead of refused.
+REMOTE_SHELLS = ('/bin/zsh', '/usr/bin/zsh', '/bin/bash', '/usr/bin/bash')
+
+
+def remote_login_command(command: str) -> str:
+    """Return a snippet that runs one command in the host's own login shell.
+
+    The host picks the shell, so the same code reads a host that has zsh and a host that has
+    only bash.  The snippet is plain POSIX sh, because the host runs it with whatever shell
+    sshd starts, and each shell is named by absolute path, because a non-interactive SSH
+    command gets a minimal PATH.  An interactive login shell is asked for, so the host's own
+    login files are read and its interactive PATH is available; the last line runs the
+    command through plain sh rather than refusing to read the host.
+    """
+    call = shlex.quote(command)
+    tried = '; '.join(f'[ -x {shell} ] && exec {shell} -lic {call}' for shell in REMOTE_SHELLS)
+    return f'{tried}; exec sh -c {call}'
+
+
+def zoxide_remote_command(*arguments: str) -> str:
+    """Run zoxide on the host, in a login shell and with its interactive PATH."""
+    override = config_value('zoxide_remote_binary')
+    if override:
+        if override.startswith('~/'):
+            binary = '"$HOME"/' + shlex.quote(override[2:])
+        elif override.startswith('/'):
+            binary = shlex.quote(override)
+        else:
+            raise ValueError('zoxide_remote_binary must be an absolute path or start with ~/')
+        return 'exec ' + binary + ' ' + shlex.join(list(arguments))
+    return remote_login_command(shlex.join(['zoxide', *arguments]))
+
+
+def zmx_remote_taken_names(server: str) -> set[str]:
+    """Read every zmx name on the remote, including names held by ended sessions."""
+    if not valid_ssh_destination(server):
+        raise ValueError('server must be an SSH config alias or user@host')
+    result = subprocess.run(
+        [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+         '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server,
+         remote_zmx_command('ls', '--short')], capture_output=True, timeout=12,
+        env=ssh_env())
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    return {line.strip() for line in result.stdout.decode('utf-8', 'replace').splitlines()
+            if line.strip()}
+
+
+def zmx_remote_projects(server: str) -> list[str]:
+    """List the remote host's zoxide directories, the projects offered by `zi`."""
+    if not valid_ssh_destination(server):
+        raise ValueError('server must be an SSH config alias or user@host')
+    result = subprocess.run(
+        [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+         '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server,
+         zoxide_remote_command('query', '-l')], capture_output=True, timeout=12,
+        env=ssh_env())
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    paths = []
+    for line in result.stdout.decode('utf-8', 'replace').splitlines():
+        path = line.strip()
+        if path.startswith('/') and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def zmx_remote_sessions(server: str) -> list[dict]:
+    """Read a remote host's live zmx rows without resolving the chat label.
+
+    A remote session's `pi=` label is carried as it is.  The chat it names lives in the
+    remote store, which the caller reads with `session-remote-list`, so that one read names
+    and previews every remote zmx row.
+    """
+    if not valid_ssh_destination(server):
+        raise ValueError('server must be an SSH config alias or user@host')
+    result = subprocess.run(
+        [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+         '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server,
+         remote_zmx_command('list')], capture_output=True, timeout=8, env=ssh_env())
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    entries = []
+    for line in result.stdout.decode('utf-8', 'replace').splitlines():
+        values = zmx_fields(line)
+        name = values.get('name', '')
+        if not name:
+            continue
+        cwd = zmx_cwd(values.get('cwd', ''))
+        entries.append({
+            'name': name, 'chat': '', 'pi': values.get('pi', ''),
+            'project': values.get('project', ''),
+            'cmd': values.get('cmd', ''), 'cwd': cwd, 'file': '',
+            'clients': int(values['clients']) if values.get('clients', '').isdigit() else 0,
+            'created': int(values['created']) if values.get('created', '').isdigit() else 0,
+            'current': False,
+        })
+    entries.sort(key=lambda entry: entry['created'], reverse=True)
+    return entries
+
+
+def pib_helper() -> pathlib.Path:
+    """Return the local pib, whose code reads a store on whichever host it runs on."""
+    override = os.environ.get('PIB_PATH')
+    if override:
+        return pathlib.Path(override)
+    beside = pathlib.Path(__file__).resolve().parent / 'pib'
+    if beside.exists():
+        return beside
+    live = pathlib.Path.home() / '.local/bin/pib'
+    if live.exists():
+        return live
+    found = shutil.which('pib')
+    if found:
+        return pathlib.Path(found)
+    raise SystemExit('pib-open: pib not found; set PIB_PATH or add it to PATH')
+
+
+def helper_source(path: pathlib.Path) -> str:
+    """Read one helper's code, which is what a host that has none is run with.
+
+    Shipping the code over the connection is what lets a host that does not run these
+    dotfiles answer at all: no file is written there, and both ends run one version.
+    """
+    try:
+        return path.read_text(encoding='utf-8')
+    except OSError as error:
+        raise RuntimeError(f'cannot read {path}: {error}') from error
+
+
+def remote_helper_command(name: str, *arguments: str, installed: bool = True) -> str:
+    """Build the remote command that runs one helper, from the host or from standard input.
+
+    A non-interactive SSH command gets a PATH that usually holds neither ~/.local/bin nor
+    the Homebrew directory, and a login shell would print its own greetings into the JSON
+    this command returns, so the helper is found explicitly.  The host's own copy wins when
+    it has one, because the host then decides how its store is read and can also say which
+    of its sessions are running.  A host without it is sent the helper instead: `python3 -`
+    runs the script that arrives on standard input, so the host needs nothing but python3.
+    With installed false the host is not asked at all, and the bytes that arrive are run:
+    that is how a read falls back when the host's own copy is too old to answer it.
+    """
+    call = shlex.join(list(arguments))
+    shipped = f'exec python3 - {call}'
+    if not installed:
+        return shipped
+    own_copy = f'"$HOME/.local/bin/{name}"'
+    return (f'if command -v {name} >/dev/null 2>&1; then exec {name} {call}; '
+            f'elif [ -x {own_copy} ]; then exec {own_copy} {call}; '
+            f'else {shipped}; fi')
+
+
+def remote_argv(server: str, command: str) -> list[str]:
+    """Return the ssh command that runs one command on a host over the shared master.
+
+    The master is shared with every other remote read and with `zmx-connect`, so one YubiKey
+    touch covers the whole session.  A destination that looks like an SSH option is refused
+    here, which is the only place a host name reaches ssh.
+    """
+    if not valid_ssh_destination(server):
+        raise ValueError('server must be an SSH config alias or user@host')
+    return [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+            '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server, command]
+
+
+def remote_run(server: str, command: str, timeout: int,
+               script: str | bytes | None = None) -> subprocess.CompletedProcess:
+    """Run one command on a remote host over the shared master connection.
+
+    `script` is written to the remote command's standard input: a host without the helper runs
+    exactly those bytes, and an image travels the same way, which is why bytes are accepted.
+    A host that has its own copy never reads them, and Python drops the broken pipe that
+    follows without failing the read.
+    """
+    return subprocess.run(
+        remote_argv(server, command),
+        input=script.encode() if isinstance(script, str) else script,
+        capture_output=True, timeout=timeout, env=ssh_env())
+
+
+def remote_helper_read(server: str, name: str, arguments: list[str], helper: pathlib.Path,
+                       timeout: int = 30) -> subprocess.CompletedProcess:
+    """Read one host through its own helper, with the code this picker ships as the fallback.
+
+    A host that runs these dotfiles is read through its own helper first, because that copy
+    is the one that matches the host.  A host whose copy is older than this picker cannot
+    answer every read: an older `pib` knows fewer stores, and it rejects a read of several
+    stores at once, so a host that is one update behind would hide its rows behind an error
+    about a flag.  The same read is then made with the code this picker ships, which reads
+    the same store on that host, so a stale copy on one machine is no longer a reason for an
+    empty list here.
+
+    A connection that failed is not retried: ssh exits 255 when it cannot run the command at
+    all, and a second attempt would only cost another ConnectTimeout.
+    """
+    script = helper_source(helper)
+    result = remote_run(server, remote_helper_command(name, *arguments), timeout=timeout,
+                        script=script)
+    if result.returncode in (0, 255):
+        return result
+    return remote_run(server, remote_helper_command(name, *arguments, installed=False),
+                      timeout=timeout, script=script)
+
+
+def own_helper() -> pathlib.Path:
+    """Return this helper's own code, which is what a host that has none is run with.
+
+    The state records live on the machine that owns the chat, so a host is asked with its own
+    helper, and the same code travels over the connection for a host that has no copy or an
+    older one.  That is the same rule `pib_helper` follows for the store reader.
+    """
+    return pathlib.Path(__file__).resolve()
+
+
+def ssh_master_present(server: str) -> bool:
+    """Report whether a host already has an SSH master, without touching the host.
+
+    `ssh -O check` talks to the control socket and to nothing else: it cannot start a connection,
+    cannot authenticate, and cannot need a YubiKey touch.  That is what makes it safe to ask on a
+    clock, which is where a touch nobody asked for would be worst.
+    """
+    try:
+        check = subprocess.run([ssh_binary(), '-S', ssh_control_path(), '-O', 'check', server],
+                               capture_output=True, timeout=5, env=ssh_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return check.returncode == 0
+
+
+def state_remote(server: str, timeout: int = 8) -> list[dict]:
+    """Return what the chats on one host are doing, as that host's own `state --json` reports.
+
+    This is the remote half of `state`: a record is written by the extension inside the chat's
+    own process, so only that machine can answer for it.  The answer is passed through as it
+    arrived, because the records are the contract the picker already reads for this machine.
+
+    A host without a master is refused rather than contacted, and the timeout is shorter than a
+    clock tick: a read on a clock must never be the thing that asks for a connection, and a host
+    that has wedged costs one cadence instead of piling reads up behind it.
+    """
+    if not ssh_master_present(server):
+        raise RuntimeError(f'{server} has no SSH master; a read on a clock must not open one')
+    result = remote_helper_read(server, 'pib-open', ['state', '--json'], own_helper(),
+                               timeout=timeout)
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(last_line(detail) or f'ssh exited with status {result.returncode}')
+    try:
+        entries = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
+    except ValueError as error:
+        raise RuntimeError(f'pib-open state returned invalid JSON: {error}') from error
+    if not isinstance(entries, list):
+        raise RuntimeError('pib-open state returned no state list')
+    # A record with no id decorates no row, and a row on a host that carries an empty id is a
+    # project header rather than a chat: the picker must not be able to hang a state on one.
+    return [entry for entry in entries if isinstance(entry, dict) and entry.get('id')]
+
+
+def harness_set(value: str) -> tuple[str, ...]:
+    """Return the store names one `--harness` value asks for.
+
+    One name selects that store; a comma-separated set, or `all`, selects every store this
+    helper knows.  The set is only ever passed through to `pib list`, which reads the stores
+    and skips the ones the host does not have.
+    """
+    names = tuple(part.strip() for part in value.split(',') if part.strip())
+    if not names or 'all' in names:
+        return SESSION_HARNESSES
+    return names
+
+
+def harnesses_remote(server: str) -> list[dict]:
+    """Report which session stores a remote host has.
+
+    The answer comes from that host's own `pib harnesses`, shipped over the connection when
+    the host has no copy, so both ends judge presence by the same rule: a store is there when
+    its own files are, whatever this machine happens to have installed.
+    """
+    result = remote_helper_read(server, 'pib', ['harnesses', '--json'], pib_helper())
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(last_line(detail) or f'ssh exited with status {result.returncode}')
+    try:
+        stores = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
+    except ValueError as error:
+        raise RuntimeError(f'pib harnesses returned invalid JSON: {error}') from error
+    if not isinstance(stores, list):
+        raise RuntimeError('pib harnesses returned no store list')
+    return [store for store in stores if isinstance(store, dict) and store.get('harness')]
+
+
+def session_remote_delete(server: str, session: str, harness: str, force: bool = False) -> int:
+    """Delete one transcript on its own host, through that host's own store.
+
+    The delete runs there, because the store is the host's: its own pib resolves the id
+    against the sessions that host holds, so nothing is guessed from a path this machine
+    cannot see.  A host without a pib of its own is sent this script over standard input, the
+    same way a read travels, so the same code deletes on both ends.
+    """
+    arguments = ['delete', session, '--harness', harness]
+    if force:
+        arguments.append('--force')
+    result = remote_run(server, remote_helper_command('pib', *arguments), timeout=30,
+                        script=helper_source(pib_helper()))
+    detail = result.stderr.decode('utf-8', 'replace').strip()
+    if result.returncode != 0:
+        raise RuntimeError(last_line(detail) or f'ssh exited with status {result.returncode}')
+    print(last_line(detail) or f'deleted {session} on {server}')
+    return 0
+
+
+def session_remote_prune(server: str, arguments: list[str], timeout: int = 600) -> int:
+    """Run the age-based delete on the host that holds the store.
+
+    The store is the host's, so the age is resolved there: the host's own pib decides which
+    of its sessions are old enough, and the count the picker shows is the host's own.  A
+    host that runs an older pib cannot answer the subcommand at all, and that is exactly the
+    case `remote_helper_read` exists for: the same read is then made with the code this
+    picker ships, so a host one update behind is still cleaned instead of refused.  The
+    second run is safe because a prune only ever selects what is still there.
+    """
+    result = remote_helper_read(server, 'pib', ['prune', *arguments], pib_helper(),
+                                timeout=timeout)
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(last_line(detail) or f'ssh exited with status {result.returncode}')
+    sys.stdout.write(result.stdout.decode('utf-8', 'replace'))
+    return 0
+
+
+def session_remote_list(server: str, harness: str, live: bool = False) -> list[dict]:
+    """Read a remote host's sessions, as that host's own `pib list --json` reports them.
+
+    These are the rows the local picker reads, so a remote session can look and behave like
+    a local one: id, harness, name, project, directory, size, age, and the transcript path on
+    that host.  `harness` is one store name, a comma-separated set, or `all`, so one read can
+    cover every store a picker shows.  `--live` asks the host whether one of its own pi
+    processes owns a session, which is what lets the picker ask before it opens a second
+    writer there; a host that has no pib of its own answers with the copy this side sends, and
+    then marks nothing live, because only that host's own helper can name its running
+    processes.
+    """
+    arguments = ['list', '--json', '--harness', harness]
+    if live and 'pi' in harness_set(harness):
+        arguments.append('--live')
+    result = remote_helper_read(server, 'pib', arguments, pib_helper())
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    try:
+        rows = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
+    except ValueError as error:
+        raise RuntimeError(f'pib list returned invalid JSON: {error}') from error
+    if not isinstance(rows, list):
+        raise RuntimeError('pib list returned no session list')
+    return [row for row in rows if isinstance(row, dict) and row.get('id')]
+
+
+def session_remote_show(server: str, identifier: str, harness: str, tail: int,
+                        path: str = '') -> str:
+    """Read the end of one remote transcript, rendered on the host that holds it.
+
+    A Pi transcript is read with `pi-last`, the reader behind the f4 binding, straight from
+    the path that host reported: that keeps the read to one file instead of a scan of the
+    store, and its code travels with the read when the host has no copy.  An OpenCode or
+    Claude Code transcript is not read through that helper, so its read goes through `pib
+    show` instead.
+    """
+    if harness in ('opencode', 'claude', 'codex') or not path:
+        arguments = ['show', identifier, '--harness', harness]
+        if tail > 0:
+            arguments += ['--tail', str(tail)]
+        helper, command = pib_helper(), remote_helper_command('pib', *arguments)
+    else:
+        arguments = ['--session', path, '--full']
+        if tail > 0:
+            arguments += ['--tail', str(tail)]
+        helper, command = pi_last(), remote_helper_command('pi-last', *arguments)
+    result = remote_run(server, command, timeout=30, script=helper_source(helper))
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    return result.stdout.decode('utf-8', 'replace')
+
+
+def session_remote_file(server: str, path: str) -> bytes:
+    """Read one transcript from a host exactly as the host stores it.
+
+    The bytes travel rather than a rendering, because the reader runs on this machine, in the
+    window the reader is in: this machine's own `pi-last` or `pib show` renders them, the same
+    way it renders a local transcript, so the host needs nothing installed for the read.  The
+    path is one quoted word, after the checks below, so nothing read out of a session record
+    can become a second command on that host.
+    """
+    given = str(path)
+    if not given.startswith('/') or '\n' in given or '\r' in given:
+        raise ValueError(f'{given!r} is not an absolute transcript path')
+    result = remote_run(server, 'cat ' + shlex.quote(given), timeout=60)
+    if result.returncode != 0:
+        detail = result.stderr.decode('utf-8', 'replace').strip()
+        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    return result.stdout
+
+
+def write_bytes(data: bytes) -> None:
+    """Write bytes to standard output, which is a pipe when a key binding's child asks."""
+    buffer = getattr(sys.stdout, 'buffer', None)
+    if buffer is None:
+        sys.stdout.write(data.decode('utf-8', 'replace'))
+        return
+    buffer.write(data)
+
+
+def session_remote_argv(server: str, cwd: str, identifier: str, harness: str = 'pi',
+                        fork: bool = False, name: str = '') -> list[str]:
+    """Return the SSH command that runs one chat on a remote host.
+
+    The chat runs in the SSH terminal, in the directory its session records.  It starts
+    inside a login shell, because a Mac's non-interactive PATH holds neither pi, opencode,
+    nor claude, and a terminal is the one place where a shell's own startup output is
+    harmless.
+    """
+    if harness == 'opencode':
+        tool = ['opencode'] + (['--session', identifier] if identifier else [])
+    elif harness == 'claude':
+        tool = ['claude']
+        if identifier:
+            # Claude Code resumes by session id from any directory, and a fork is a copy of
+            # the conversation under a session id of its own.
+            tool += ['--resume', identifier]
+            if fork:
+                tool.append('--fork-session')
+                if name:
+                    tool += ['--name', name]
+    elif harness == 'codex':
+        # Codex resumes by session id from any directory, and forks the same way.
+        tool = ['codex']
+        if identifier:
+            tool += ['fork', identifier] if fork else ['resume', identifier]
+    else:
+        tool = ['pi']
+        if identifier:
+            tool += ['--fork', identifier] if fork else ['--session', identifier]
+        if fork and name:
+            tool += ['--name', name]
+    inside = remote_login_command(shlex.join(tool))
+    # The group keeps the cd and the shell choice one command: without it a failed cd would
+    # still fall through to the shells the snippet tries after the first.
+    remote = f'cd -- {shlex.quote(cwd)} && {{ {inside}; }}' if cwd else inside
+    return [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no', '-t',
+            server, with_remote_env(server, remote)]
+
+
+def session_remote_open(server: str, cwd: str, identifier: str, harness: str = 'pi',
+                        fork: bool = False, name: str = '', label: str = '',
+                        place: str = 'tab', emit: bool = False) -> int:
+    """Open an SSH terminal that resumes, forks, or starts a chat on a remote host.
+
+    An empty session id starts a new chat in the project, which is what `new` does locally.
+    A remote row always opens a new terminal: a picker cannot switch to a window on another
+    host, and a resume over SSH is a fresh process either way.  The window is left to pi's
+    own title, which travels back over the SSH pty, so a remote chat is named as locally.
+    """
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if cwd and not cwd.startswith('/'):
+        return fail('pib-open: remote project directory must be an absolute path')
+    if harness == 'opencode':
+        project = pathlib.PurePosixPath(cwd).name
+        label = label or (f'opencode {short_name(identifier)}' if identifier
+                          else f'opencode {project}')
+    elif harness == 'claude':
+        project = pathlib.PurePosixPath(cwd).name
+        label = label or (f'claude {short_name(identifier)}' if identifier
+                          else f'claude {project}')
+    elif harness == 'codex':
+        project = pathlib.PurePosixPath(cwd).name
+        label = label or (f'codex {short_name(identifier)}' if identifier
+                          else f'codex {project}')
+    else:
+        label = ''  # pi names its own window, locally and over SSH
+    return launch(session_remote_argv(server, cwd, identifier, harness, fork, name),
+                  str(pathlib.Path.home()), label, place, emit)
+
+
+def session_remote_copy(server: str, identifier: str, harness: str, cwd: str) -> int:
+    """Print and copy the command that opens one remote session in a terminal."""
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    line = shlex.join(session_remote_argv(server, cwd, identifier, harness))
+    sys.stdout.write(line + '\n')
+    if shutil.which('pbcopy'):
+        subprocess.run(['pbcopy'], input=line.encode(), check=False)
+    return 0
+
+
+# The marker a host prints when it cannot answer.  It is read out of stdout rather than from
+# an exit status, because a login shell's status is the status of its last command, not of
+# the check that ran before it.
+MISSING_DIR_MARKER = 'pib-no-dir'
+MISSING_TOOL_MARKER = 'pib-no-tool'
+MISSING_EDITOR_MARKER = 'pib-no-editor'
+
+# The editor a host opens a directory in when the caller names none: the host's own choice
+# first, because an editor is a machine's own tool with its own configuration, and nvim
+# otherwise.  The host's login shell expands this, so the fallback has to reach it as written.
+HOST_EDITOR = '${EDITOR:-nvim}'
+
+# The directory tools the picker runs on a row's own host.  A chat opens where its transcript
+# is, and a directory tool opens where its files are: yazi browses them and lazygit works on
+# them, so the host that holds them is the machine that runs the tool.
+REMOTE_TOOLS = ('lazygit', 'yazi')
+
+# A tool name that may travel to a host.  The name is quoted into a login shell there, so a
+# metacharacter would be a way to run something else; this keeps the name a name.
+TOOL_NAME = re.compile(r'[A-Za-z0-9_./+-]+')
+
+
+def remote_tool_argv(server: str, cwd: str, tool: str) -> list[str]:
+    """Return the SSH command that runs one directory tool on a host.
+
+    The tool runs in the host's own login shell, because the host is the one that decides
+    whether the tool is on the interactive PATH, and because a host without zsh is read
+    rather than refused.  lazygit is given the project directory and climbs to the
+    repository that holds it by itself: the repository top cannot be resolved here, because
+    a path this machine cannot see is not a path it can ask git about.
+    """
+    inside = remote_login_command(tool)
+    remote = f'cd -- {shlex.quote(cwd)} && {{ {inside}; }}' if cwd else inside
+    return [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no', '-t',
+            server, with_remote_env(server, remote)]
+
+
+def remote_tool_problem(server: str, cwd: str, tool: str) -> str:
+    """Return one line that says why the tool cannot start on the host, or ''.
+
+    One question is asked before a terminal is opened, because a terminal closes at once
+    when the tool inside it cannot start, and its own message would close with it.  The
+    question is asked in the host's login shell, the same shell the tool would run in, so
+    the answer is about the PATH the tool would really see.
+
+    A host that cannot be reached at all is not a reason to refuse: the question has no
+    master to reuse, so it says nothing, and the launch's own terminal is where a
+    connection failure belongs.  A missing directory is only reported when one was asked
+    for: an empty directory means the tool should start in the host's home directory, which
+    is a choice the caller made, not a mistake to report.
+    """
+    check = ''
+    if cwd:
+        check += f'test -d {shlex.quote(cwd)} || echo {MISSING_DIR_MARKER}; '
+    # The marker is printed by the login shell itself, so it arrives whichever shell the host
+    # has, including the `exec` that replaces the shell that started here.
+    check += remote_login_command(f'command -v {tool} >/dev/null 2>&1 '
+                                  f'|| echo {MISSING_TOOL_MARKER}')
+    try:
+        result = remote_run(server, check, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    if result.returncode != 0:
+        return ''
+    told = result.stdout.decode('utf-8', 'replace')
+    if cwd and MISSING_DIR_MARKER in told:
+        return f'{cwd} does not exist on {server}'
+    if MISSING_TOOL_MARKER in told:
+        return f'{tool} is not installed on {server}'
+    return ''
+
+
+def tool_remote(server: str, cwd: str, tool: str, label: str = '', place: str = 'tab',
+                emit: bool = False) -> int:
+    """Open a terminal that runs one directory tool on a host, in the host's directory.
+
+    An empty directory is not a mistake: it is what the picker sends for a session whose
+    recorded directory the host has already reported as gone, and the tool then starts in
+    that host's home directory, as a chat does.
+    """
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if not TOOL_NAME.fullmatch(tool):
+        return fail(f'pib-open: {tool} is not a command name this runs on a host')
+    if cwd and not cwd.startswith('/'):
+        return fail('pib-open: remote project directory must be an absolute path')
+    if not label:
+        label = f'{tool} {pathlib.PurePosixPath(cwd).name}' if cwd else tool
+    if not emit:
+        problem = remote_tool_problem(server, cwd, tool)
+        if problem:
+            return fail(f'pib-open: {problem}')
+    return launch(remote_tool_argv(server, cwd, tool), str(pathlib.Path.home()), label,
+                  place, emit)
+
+
+def remote_directory_problem(server: str, cwd: str) -> str:
+    """Return one line that says the host has no such directory, or ''.
+
+    The same question `remote_tool_problem` asks, without the tool half: a shell is the
+    host's own, so there is nothing to look up, and only the directory can be wrong.  A host
+    that cannot be reached says nothing here, for the same reason it does there.
+    """
+    if not cwd:
+        return ''
+    check = f'test -d {shlex.quote(cwd)} || echo {MISSING_DIR_MARKER}'
+    try:
+        result = remote_run(server, check, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    if result.returncode != 0:
+        return ''
+    if MISSING_DIR_MARKER in result.stdout.decode('utf-8', 'replace'):
+        return f'{cwd} does not exist on {server}'
+    return ''
+
+
+def remote_shell_argv(server: str, cwd: str) -> list[str]:
+    """Return the SSH command that opens an interactive login shell on a host.
+
+    No command is given to that shell: the reader gets the host's own shell, interactive, so
+    the host's own startup files are read and its interactive PATH is what the reader works
+    with, exactly as a shell opened on this machine would be.  The shells are named by
+    absolute path because a non-interactive SSH command gets a minimal PATH, and each is
+    tried in turn so a host with bash and no zsh is opened rather than refused.
+    """
+    tried = '; '.join(f'[ -x {shell} ] && exec {shell} -l' for shell in REMOTE_SHELLS)
+    inside = f'{tried}; exec sh -l'
+    remote = f'cd -- {shlex.quote(cwd)} && {{ {inside}; }}' if cwd else inside
+    return [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no', '-t',
+            server, with_remote_env(server, remote)]
+
+
+def shell_remote(server: str, cwd: str, label: str = '', place: str = 'tab',
+                 emit: bool = False) -> int:
+    """Open an interactive login shell on a host, in that host's own directory.
+
+    A shell gets no zmx session, here as on this machine: only a chat is worth keeping alive
+    across terminals, and a zmx session is tied to a chat by the `pi=` label it carries.
+    """
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if cwd and not cwd.startswith('/'):
+        return fail('pib-open: remote project directory must be an absolute path')
+    if not label:
+        label = f'shell {pathlib.PurePosixPath(cwd).name}' if cwd else 'shell'
+    if not emit:
+        problem = remote_directory_problem(server, cwd)
+        if problem:
+            return fail(f'pib-open: {problem}')
+    return launch(remote_shell_argv(server, cwd), str(pathlib.Path.home()), label, place, emit)
+
+
+def remote_editor_argv(server: str, cwd: str, editor: str) -> list[str]:
+    """Return the SSH command that opens one directory in an editor on a host.
+
+    The editor is both chosen and run on the host: the same command a shell on that machine
+    would run, in that machine's directory.  No path from this machine travels with it,
+    because `/opt/homebrew/bin/nvim` names nothing there, and the editor a host has (with its
+    own plugins and its own clipboard) is that host's business anyway.
+    """
+    expression = editor or HOST_EDITOR
+    inside = remote_login_command(f'exec {expression} {shlex.quote(cwd)}')
+    remote = f'cd -- {shlex.quote(cwd)} && {{ {inside}; }}' if cwd else inside
+    return [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no', '-t',
+            server, with_remote_env(server, remote)]
+
+
+def remote_editor_problem(server: str, cwd: str, editor: str) -> str:
+    """Return one line that says why the editor cannot start on the host, or ''.
+
+    The tool question with the editor in it, under the same rules: one question before a
+    terminal opens, and a host that cannot be reached is not refused by it.  The editor is
+    resolved the way the login shell will resolve it, so what is looked for is the host's own
+    `$EDITOR` when the caller named none: the first word of the expression is what has to
+    exist, because the expression may carry arguments.
+    """
+    expression = editor or HOST_EDITOR
+    lookup = (f'set -- {expression}; command -v "$1" >/dev/null 2>&1 '
+              f'|| echo {MISSING_EDITOR_MARKER} "$1"')
+    check = ''
+    if cwd:
+        check += f'test -d {shlex.quote(cwd)} || echo {MISSING_DIR_MARKER}; '
+    check += remote_login_command(lookup)
+    try:
+        result = remote_run(server, check, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    if result.returncode != 0:
+        return ''
+    told = result.stdout.decode('utf-8', 'replace')
+    if cwd and MISSING_DIR_MARKER in told:
+        return f'{cwd} does not exist on {server}'
+    if MISSING_EDITOR_MARKER in told:
+        # The host names what it would have run, which is the host's own `$EDITOR` when the
+        # caller named none: that is the editor the reader has to install, or replace.
+        missing = ''
+        for line in told.splitlines():
+            if line.startswith(MISSING_EDITOR_MARKER):
+                missing = line[len(MISSING_EDITOR_MARKER):].strip()
+        if missing:
+            return f'{missing} is not installed on {server}'
+        return f"neither the host's $EDITOR nor nvim is installed on {server}"
+    return ''
+
+
+def editor_remote(server: str, cwd: str, editor: str = '', label: str = '',
+                  place: str = 'tab', emit: bool = False) -> int:
+    """Open a terminal that shows one directory in an editor on a host.
+
+    An empty editor means the host's own: its `$EDITOR` when it has one, and nvim otherwise.
+    The label is the caller's, because a tab title is read here and the editor that runs
+    there is chosen there; without one the editor names the window itself.
+    """
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if cwd and not cwd.startswith('/'):
+        return fail('pib-open: remote project directory must be an absolute path')
+    if not emit:
+        problem = remote_editor_problem(server, cwd, editor)
+        if problem:
+            return fail(f'pib-open: {problem}')
+    return launch(remote_editor_argv(server, cwd, editor), str(pathlib.Path.home()), label,
+                  place, emit)
+
+
+# --- an image from this clipboard, for a chat that runs elsewhere -------------------------
+#
+# A chat reads the clipboard of the machine it runs on, so a chat on another host has none to
+# read: over SSH, Pi, Claude Code, and Codex all look at an operating-system clipboard that is
+# not there.  The clipboard that holds the image is this one, so the image is written into a
+# file on the host instead and the file's path is typed into the window.  Every store takes a
+# path -- Pi inserts one itself when it pastes -- so one path is the whole interface.  Nothing
+# is written on a host outside the one directory below, and an image leaves this machine only
+# when the key is pressed.
+
+PASTE_DIR = 'pib-paste'
+PASTE_TIMEOUT = 30
+
+# The short options of ssh that take a value.  That is all this has to know to find the
+# destination on a command line: everything in front of it is an option or an option's value.
+# A value attached to its own option, as in `-p2222`, needs no entry here.
+SSH_VALUE_OPTIONS = set('BbcDEeFIiJLlmOopQRSWw')
+
+
+def clipboard_image() -> pathlib.Path | None:
+    """Write the image on this machine's clipboard into a temporary file, or return None.
+
+    macOS is asked through AppleScript: reading the pasteboard needs no terminal, and a
+    key-binding child has none, so `kitten clipboard` cannot be used here.  The pasteboard
+    keeps its contents, and a clipboard holding only text fails the coercion, which is the
+    "no image" answer.  Linux is asked the way Pi asks it: wl-paste on Wayland, xclip
+    otherwise.  The caller owns the directory and removes it once the image has been read.
+    """
+    directory = pathlib.Path(tempfile.mkdtemp(prefix='pib-paste-'))
+    path = directory / 'image.png'
+    if sys.platform == 'darwin':
+        quoted = str(path).replace('\\', '\\\\').replace('"', '\\"')
+        script = (f'set f to (open for access (POSIX file "{quoted}") with write permission)\n'
+                  'set eof f to 0\n'
+                  'write (the clipboard as «class PNGf») to f\n'
+                  'close access f\n')
+        try:
+            result = subprocess.run(['osascript', '-e', script], capture_output=True,
+                                    timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if (result is not None and result.returncode == 0 and path.exists()
+                and path.stat().st_size):
+            return path
+        shutil.rmtree(directory, ignore_errors=True)
+        return None
+    readers = []
+    if os.environ.get('WAYLAND_DISPLAY'):
+        readers.append(['wl-paste', '--type', 'image/png', '--no-newline'])
+    readers.append(['xclip', '-selection', 'clipboard', '-t', 'image/png', '-o'])
+    for reader in readers:
+        try:
+            data = subprocess.run(reader, capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if data.returncode == 0 and data.stdout:
+            path.write_bytes(data.stdout)
+            return path
+    shutil.rmtree(directory, ignore_errors=True)
+    return None
+
+
+def paste_name() -> str:
+    """Return the name one image gets on a host.
+
+    The name is made on this side, so the path is known before the bytes are sent and the
+    host has only to confirm it.  A fresh name is what keeps a paste already written into a
+    prompt from changing under it when the next image is pasted.
+    """
+    return f'image-{secrets.token_hex(4)}.png'
+
+
+def remote_paste_command(name: str) -> str:
+    """Build the remote shell that stores one image and prints where it can be read.
+
+    One directory this tool owns holds every paste, so a host does not collect them forever
+    and the only delete is of a file inside that directory.  The image's own bytes arrive on
+    standard input, which is the one thing that has to be binary-safe about it.
+    """
+    return ('umask 077\n'
+            'base=${TMPDIR:-/tmp}\n'
+            f'dir=${{base%/}}/{PASTE_DIR}\n'
+            'mkdir -p "$dir" || exit 1\n'
+            'chmod 700 "$dir"\n'
+            'find "$dir" -type f -mtime +1 -delete 2>/dev/null\n'
+            f'cat > "$dir/{name}" || exit 1\n'
+            f'printf \'%s\\n\' "$dir/{name}"\n')
+
+
+def paste_remote_path(server: str, data: bytes, timeout: int = PASTE_TIMEOUT) -> str:
+    """Store one image on a host, and return the path that host reads it at.
+
+    A host that refuses the write and a host that answers with nothing are told apart from a
+    stored image by the same rule: the last line of standard output, which is the path.
+    """
+    name = paste_name()
+    result = remote_run(server, remote_paste_command(name), timeout=timeout, script=data)
+    if result.returncode != 0:
+        raise RuntimeError(last_line(result.stderr.decode('utf-8', 'replace'))
+                           or f'ssh exited with status {result.returncode}')
+    path = last_line(result.stdout.decode('utf-8', 'replace'))
+    if not path:
+        raise RuntimeError('the host did not say where the image was written')
+    return path
+
+
+def paste_remote(server: str, emit: bool = False) -> int:
+    """Store this clipboard's image on a host and print the path it can be read at there."""
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if emit:
+        # The image is not read and no host is asked anything: the name in the path is a
+        # sample, because the real one is made when the image is read.
+        print(shlex.join(remote_argv(server, remote_paste_command('image-00000000.png'))))
+        return 0
+    image = clipboard_image()
+    if image is None:
+        return fail('pib-open: no image on this clipboard')
+    try:
+        data = image.read_bytes()
+    except OSError as error:
+        return fail(f'pib-open: could not read the clipboard image: {error}')
+    finally:
+        shutil.rmtree(image.parent, ignore_errors=True)
+    try:
+        path = paste_remote_path(server, data)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+        return fail(f'pib-open: could not store the image on {server}: {error}')
+    print(path)
+    return 0
+
+
+def ssh_destination_index(argv: list[str]) -> tuple[str, int]:
+    """Return the destination one ssh command line names, and where it sits, or ('', -1).
+
+    A command line that does not run ssh names no host.  Only the destination is wanted, and
+    it is the first word that is neither an option nor an option's value.  `--` ends the
+    options, and a word that cannot be a destination is refused, so nothing read out of a
+    process list reaches a shell.  The index is returned as well, because the words after the
+    destination are the command the host runs, which is what a chat on a host is opened by.
+    """
+    if not argv or os.path.basename(argv[0]) != 'ssh':
+        return '', -1
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token == '--':
+            index += 1
+            break
+        if token == '-' or not token.startswith('-'):
+            break
+        attached = len(token) > 2
+        index += 1 if attached or token[1] not in SSH_VALUE_OPTIONS else 2
+    if index < len(argv):
+        candidate = argv[index]
+        if valid_ssh_destination(candidate):
+            return candidate, index
+    return '', -1
+
+
+def ssh_destination_from_argv(argv: list[str]) -> str:
+    """Return the destination one ssh command line names, or ''."""
+    return ssh_destination_index(argv)[0]
+
+
+def window_ssh_destination(window: dict) -> str:
+    """Return the host the session in one window runs on, or '' when it runs here.
+
+    Every verb here that reaches a host opens an `ssh` process of its own, and kitty reports
+    the command line of the processes a window runs, so the window itself names its host: the
+    same read works for a chat, for a zmx client, and for a plain shell, and the caller never
+    has to name a host it was not told.
+    """
+    for command in window.get('commands') or []:
+        if not command or os.path.basename(command[0]) != 'ssh':
+            continue
+        destination = ssh_destination_from_argv([str(word) for word in command])
+        if destination:
+            return destination
+    return ''
+
+
+def send_window_text(prefix: list[str], identifier: str, text: str) -> bool:
+    """Type one line into one kitty window, as it is: no escape is interpreted."""
+    result = subprocess.run(prefix + ['send-text', '--match', f'id:{identifier}', '--stdin'],
+                            input=text.encode(), capture_output=True)
+    return result.returncode == 0
+
+
+def paste_failure(message: str) -> int:
+    """Report a paste failure where it can still be found: on stderr, and in the state log."""
+    note_failure(message)
+    return fail(message)
+
+
+def paste_clipboard_text(prefix: list[str], identifier: str) -> int:
+    """Run the terminal's own paste on one window, the fallback when no image is waiting."""
+    result = subprocess.run(prefix + ['action', '--match', f'id:{identifier}',
+                                      'paste_from_clipboard'], capture_output=True)
+    if result.returncode != 0:
+        return paste_failure('pib-open: no image on this clipboard, and kitty would not paste')
+    return 0
+
+
+def paste_window(identifier: str) -> int:
+    """Put this clipboard's image where the session in one window can read it.
+
+    The window's own processes say which host runs its session, so the same key works on a
+    row of any host and on this machine.  A window on this machine gets the path of the
+    temporary file the clipboard was read into, which is what Pi's own `ctrl+v` inserts.
+    Nothing is typed into a window unless a path is ready: a key-binding child has no screen,
+    so a failure goes to stderr and to the state log instead of into somebody's prompt.
+    """
+    prefix = kitten_prefix()
+    if prefix is None:
+        return paste_failure('pib-open: no kitty is running; paste-window types into a window')
+    window = next((entry for entry in kitty_windows(prefix)
+                   if entry['target'] == str(identifier)), None)
+    if window is None:
+        return paste_failure(f'pib-open: no kitty window {identifier}')
+    image = clipboard_image()
+    if image is None:
+        return paste_clipboard_text(prefix, identifier)
+    server = window_ssh_destination(window)
+    if server:
+        try:
+            data = image.read_bytes()
+        except OSError as error:
+            return paste_failure(f'pib-open: could not read the clipboard image: {error}')
+        finally:
+            shutil.rmtree(image.parent, ignore_errors=True)
+        try:
+            path = paste_remote_path(server, data)
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+            return paste_failure(f'pib-open: could not store the image on {server}: {error}')
+    else:
+        path = str(image)
+    if not send_window_text(prefix, identifier, path):
+        return paste_failure(f'pib-open: kitty would not type into window {identifier}')
+    return 0
+
+
+# --- the target one window acts on -------------------------------------------------------
+#
+# The cmd+. binding opens the picker's next-step menu for the window the reader is in, so the
+# window itself has to say where that menu applies.  Only a destination the picker already
+# reads is a target: an ssh to somewhere else is refused, because the picker has no rows for
+# it and could only guess at the host's tools.
+
+# ZMX_ATTACH finds the session a window holds a client for.  A local client runs `zmx attach
+# <name>`; a remote one runs an ssh whose command string carries the same words, so one read
+# covers both, and the lookbehind keeps an env pair such as PIB_ZMX=/usr/bin/zmx from matching
+# on its own.
+ZMX_ATTACH = re.compile(r'(?<![\w.-])zmx\s+attach\s+([A-Za-z0-9._-]+)')
+
+
+def configured_servers() -> list[str]:
+    """Return the SSH destinations the picker reads, as zmx_servers lists them."""
+    return [server for server in re.split(r'[,\s]+', config_value('zmx_servers')) if server]
+
+
+def window_zmx_name(window: dict) -> str:
+    """Return the zmx session a window holds a client for, or ''."""
+    for command in window.get('commands') or []:
+        if not command:
+            continue
+        match = ZMX_ATTACH.search(' '.join(str(word) for word in command))
+        if match:
+            return match.group(1)
+    return ''
+
+
+def zmx_session_cwd(name: str, server: str = '') -> str:
+    """Return the directory one zmx session runs in, on this machine or on a host."""
+    try:
+        entries = zmx_remote_sessions(server) if server else zmx_sessions()
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+        return ''
+    for entry in entries:
+        if entry['name'] == name:
+            return entry['cwd']
+    return ''
+
+
+def remote_window_cwd(server: str, title: str) -> str:
+    """Return the project of the chat one remote window shows, named by the window's title.
+
+    Pi publishes the session name in the window title, and that title travels back over the
+    ssh pty, so it is the one thing a remote window says about the chat it runs.  A title that
+    names no session there, or a host that cannot answer, yields no directory: a wrong
+    directory would open the next chat in the wrong project, which is worse than a refusal.
+    """
+    wanted = squeeze(title)
+    if not wanted:
+        return ''
+    try:
+        rows = session_remote_list(server, 'all')
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+        return ''
+    matches = [row for row in rows
+               if squeeze(str(row.get('name') or '')) == wanted
+               and str(row.get('cwd') or '').startswith('/')]
+    if not matches:
+        return ''
+    matches.sort(key=lambda row: row.get('modified') or 0, reverse=True)
+    return str(matches[0]['cwd'])
+
+
+def target_stores(server: str = '') -> list[str]:
+    """Return the stores one target has, best effort: a target that cannot answer names none.
+
+    The answer is intersected with the picker's own `harnesses` setting at the other end, so
+    naming none leaves that setting in force instead of removing every store from the menu.
+    """
+    try:
+        if server:
+            report = harnesses_remote(server)
+        else:
+            result = subprocess.run(
+                [sys.executable, str(pib_helper()), 'harnesses', '--json'],
+                capture_output=True, timeout=30)
+            report = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+        return []
+    if not isinstance(report, list):
+        return []
+    return [str(store['harness']) for store in report
+            if isinstance(store, dict) and store.get('present') and store.get('harness')]
+
+
+def window_target(identifier: str) -> dict:
+    """Return the host, project, and stores one kitty window's menu applies to.
+
+    Raises RuntimeError with one line a reader can act on when the window cannot be placed:
+    no kitty, no such window, an ssh to a destination the picker does not read, or a directory
+    none of the rules below can find.
+    """
+    prefix = kitten_prefix()
+    if prefix is None:
+        raise RuntimeError('no kitty is running; the cmd+. key needs one')
+    window = next((entry for entry in kitty_windows(prefix)
+                   if entry['target'] == str(identifier)), None)
+    if window is None:
+        raise RuntimeError(f'no kitty window {identifier}')
+    server = window_ssh_destination(window)
+    if server and server not in configured_servers():
+        raise RuntimeError(f'{server} is not a pib target; add it to zmx_servers in '
+                           '~/.config/sh2pil/config.yaml')
+    name = window_zmx_name(window)
+    cwd = zmx_session_cwd(name, server) if name else ''
+    if not cwd and server:
+        # A window on another host whose chat runs outside zmx: the title names the session
+        # its host recorded, and that session records the directory.
+        cwd = remote_window_cwd(server, window.get('title') or '')
+    if not cwd and not server:
+        # Only a local window can be placed by kitty: the directory it reports is the one the
+        # program in front of the reader runs in, which is the project it is working on.  A
+        # window on a host never falls back to it, because that path means nothing there.
+        cwd = window.get('cwd') or ''
+    if not cwd or not cwd.startswith('/'):
+        where = f'window {identifier} on {server}' if server else f'kitty window {identifier}'
+        raise RuntimeError(f'cannot find the project of {where}: nothing names a directory '
+                           'for it (run it inside a zmx session, or from a chat)')
+    return {'server': server, 'cwd': cwd, 'project': os.path.basename(cwd) or cwd,
+            'stores': target_stores(server)}
+
+
+def print_window_target(identifier: str, as_json: bool = False) -> int:
+    """Print the target one window's menu would open on."""
+    try:
+        target = window_target(identifier)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+        return fail(f'pib-open: {error}')
+    if as_json:
+        json.dump(target, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write('\n')
+        return 0
+    print(f"host    {target['server'] or 'this machine'}")
+    print(f"project {target['project']}  ({target['cwd']})")
+    print(f"stores  {', '.join(target['stores']) or 'unknown'}")
+    return 0
+
+
+# Pi publishes the session it runs in the window title, and that is the one thing a window on
+# a host says about the chat in it when the window holds no zmx client.  A window the picker
+# opened carries the session name alone; a window a reader opened by hand shows pi's own
+# `<app> - <name> - <project>`, whose name is the middle part.  That middle-part rule is the one
+# `pi-last` parses a title with, and it is repeated here because a title is all this side has.
+PI_TITLE = re.compile(r'^(?:π|pi)\s+-\s+')
+
+# The tools that start a chat, as the command line that starts one spells the name.  On this
+# machine the store's own process is in the window kitty reports, and on a host the store is
+# read from the command line the window runs there: `ssh` is all this side sees of a chat on
+# another machine, so the tool inside that command is the one word that names the store.
+CHAT_TOOLS = ('pi', 'opencode', 'claude', 'codex')
+
+# The stores this side can show: `pi-last` renders Pi, and this helper renders the other two.
+CHAT_READERS = ('pi', 'claude', 'codex')
+
+# A command line that copies a chat runs the copy under an id of its own, so an id on such a
+# line names the chat the copy was taken from, not the one the window shows.
+FORK_WORDS = ('--fork', '--fork-session', 'fork')
+
+
+def window_session_names(title: str) -> list[str]:
+    """Return the session names one window title may hold, best first."""
+    wanted = squeeze(title)
+    if not wanted:
+        return []
+    names = [wanted]
+    if PI_TITLE.match(wanted):
+        parts = [part.strip() for part in wanted.split(' - ')]
+        if len(parts) >= 3:
+            names.append(' - '.join(parts[1:-1]))
+    return [name for name in names if name]
+
+
+def newest_row(rows: list[dict]) -> dict:
+    """Return the newest of several rows, which is how a tie is broken."""
+    def modified(row: dict) -> float:
+        value = row.get('modified')
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    return sorted(rows, key=modified, reverse=True)[0]
+
+
+def window_chat_cwd(server: str, window: dict) -> str:
+    """Return the directory of the chat one window shows, when the window names it.
+
+    A window that holds a zmx client names the session the chat runs in, and that session
+    records its directory on the host.  It is the one directory the window and the host's own
+    rows have in common, which is what places a Claude Code or a Codex window: neither of
+    those stores publishes its session in the title.
+    """
+    name = window_zmx_name(window)
+    return zmx_session_cwd(name, server) if name else ''
+
+
+def chat_words(remote: str) -> list[str]:
+    """Split one host command line into the words the host's shell reads."""
+    try:
+        return shlex.split(remote)
+    except ValueError:
+        return []
+
+
+def chat_directory(words: list[str]) -> str:
+    """Return the directory one host command line runs a chat in, or ''.
+
+    The picker writes `cd -- <directory>` in front of every chat it opens on a host, so one
+    line names the project the chat runs in even when the store publishes no session name.
+    """
+    for index, word in enumerate(words):
+        if word == 'cd' and words[index + 1:index + 2] == ['--']:
+            return words[index + 2] if index + 2 < len(words) else ''
+    return ''
+
+
+def chat_tool(words: list[str]) -> list[str]:
+    """Return the words of the tool that starts the chat among one command line's words.
+
+    The picker quotes the tool command when it builds the host's line, so the tool is one word
+    that begins with the store's own name, and the search starts after the `cd --` the same
+    line writes first: a directory can be named after a store too, and only the command that
+    starts the chat says which store runs it.  The call is written in front of the shell
+    separator that ends it, so that is trimmed before the words are read.
+    """
+    start = 0
+    for index, word in enumerate(words):
+        if word == 'cd' and words[index + 1:index + 2] == ['--']:
+            start = index + 3
+            break
+    for word in words[start:]:
+        parts = word.rstrip(';').split()
+        if parts and os.path.basename(parts[0]) in CHAT_TOOLS:
+            return parts
+    return []
+
+
+def chat_resumed_session(flags: list[str]) -> str:
+    """Return the session one chat command resumes, or '' when it starts a new chat.
+
+    Pi and OpenCode name it with `--session`, Claude Code with `--resume`, and Codex with its
+    own `resume` word.  A copy names the chat it was copied from, which is why the caller
+    reads the forking words as well before it trusts an id.
+    """
+    for index, word in enumerate(flags):
+        if word in ('--session', '--resume', 'resume') and index + 1 < len(flags):
+            return flags[index + 1]
+    return ''
+
+
+def window_remote_chat(window: dict) -> dict:
+    """Return what one window's own ssh command line says about the chat it runs.
+
+    A chat on a host is opened here by one ssh command that runs one command there, and that
+    command is built from the tool which starts the chat, so it names the store, the directory
+    the chat runs in, and the session when it resumes one instead of starting a new chat.  It
+    is the window's own statement, which is the same reason the host is read from the window.
+    A window with no ssh of its own, and a plain `ssh host` that runs no command, say nothing,
+    and the caller then falls back to the title and to the host's own rows.
+    """
+    empty = {'store': '', 'directory': '', 'session': '', 'fork': False}
+    for command in window.get('commands') or []:
+        argv = [str(word) for word in command]
+        _, index = ssh_destination_index(argv)
+        if index < 0:
+            continue
+        words = chat_words(' '.join(argv[index + 1:]))
+        tool = chat_tool(words)
+        if not tool:
+            continue
+        return {'store': os.path.basename(tool[0]), 'directory': chat_directory(words),
+                'session': chat_resumed_session(tool[1:]),
+                'fork': any(word in FORK_WORDS for word in tool[1:])}
+    return empty
+
+
+def remote_window_session(server: str, harness: str, window: dict, chat: dict) -> dict:
+    """Return the row of a host's own session that one window runs.
+
+    The host is asked for the one store the window runs, and the window says which of its rows
+    it is: its command line names the session it resumes, its title names a Pi session, and a
+    command line that `cd`s into a directory names where a new or a copied chat runs.  The
+    newest row wins a tie, which is the rule this picker's own reads use.  A command line that
+    resumes a session names it most exactly, so that id is read first; a copy runs under an id
+    of its own, which is why the forking words are read before the id is trusted.
+    """
+    try:
+        rows = session_remote_list(server, harness)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+        raise RuntimeError(f'could not read {server}: {error}') from error
+    rows = [row for row in rows if isinstance(row, dict) and row.get('id')]
+    resumed = '' if chat.get('fork') else str(chat.get('session') or '')
+    if resumed:
+        matched = [row for row in rows if str(row.get('id') or '') == resumed]
+        if matched:
+            return matched[0]
+    names = window_session_names(str(window.get('title') or ''))
+    if names:
+        matched = [row for row in rows
+                   if squeeze(str(row.get('name') or '')) in names]
+        if matched:
+            return newest_row(matched)
+    directory = window_chat_cwd(server, window) or str(chat.get('directory') or '')
+    if directory:
+        matched = [row for row in rows
+                   if str(row.get('cwd') or '').rstrip('/') == directory.rstrip('/')]
+        if matched:
+            return newest_row(matched)
+    where = 'window ' + str(window.get('target') or '?') + ' on ' + server
+    raise RuntimeError('cannot find the session of ' + where + ': nothing names a session '
+                       'or a directory for it')
+
+
+def window_session(identifier: str, harness: str = 'pi') -> dict:
+    """Return the host and the session one kitty window runs, or no host at all.
+
+    The f3 and f4 bindings show the transcript of the chat in the window the reader is in, and
+    a chat that runs on another machine has to be read there.  Only a host this picker reads
+    can be asked, and a window that runs here has nothing remote about it, so a window on this
+    machine, a window kitty does not know, a window with no kitty behind it, and a window on a
+    host outside `zmx_servers` all answer with no host and leave the caller's local read as it
+    was.  A host this picker does read has to name a session: the transcript of the directory
+    the reader happened to ssh from is a different chat, and showing it is worse than saying
+    so in one line.
+
+    The store is read from the window's own command line, and the caller's store is only the
+    fallback for a window that does not say: what the window runs there is a stronger statement
+    about the chat than what kitty sees of the local ssh process.  A store this side has no
+    reader for is refused rather than read as another store's chat.
+    """
+    if harness not in CHAT_READERS:
+        raise ValueError(f'{harness!r} has no transcript reader; expected pi, claude, or codex')
+    local = {'host': ''}
+    prefix = kitten_prefix()
+    if prefix is None:
+        return local
+    window = next((entry for entry in kitty_windows(prefix)
+                   if entry['target'] == str(identifier)), None)
+    if window is None:
+        return local
+    server = window_ssh_destination(window)
+    if not server or server not in configured_servers():
+        return local
+    chat = window_remote_chat(window)
+    store = str(chat.get('store') or harness)
+    if store not in CHAT_READERS:
+        raise RuntimeError('the chat in window ' + str(identifier) + ' on ' + server + ' runs '
+                           + store + ', which has no transcript reader here')
+    row = remote_window_session(server, store, window, chat)
+    path = str(row.get('file') or '')
+    if not path.startswith('/'):
+        raise RuntimeError('the ' + store + ' session ' + str(row.get('id') or '') + ' on '
+                           + server + ' reports no transcript path')
+    return {'host': server, 'harness': store, 'session': str(row.get('id') or ''),
+            'file': path, 'cwd': str(row.get('cwd') or ''),
+            'name': str(row.get('name') or '')}
+
+
+def print_window_session(identifier: str, harness: str, as_json: bool = False) -> int:
+    """Print the host and the session one window's chat runs on."""
+    try:
+        answer = window_session(identifier, harness)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+        return fail(f'pib-open: {error}')
+    if as_json:
+        json.dump(answer, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write('\n')
+        return 0
+    if not answer['host']:
+        print('this machine')
+        return 0
+    print('host    ' + answer['host'])
+    print('session ' + answer['session'] + '  (' + (answer['name'] or 'unnamed') + ')')
+    print('file    ' + answer['file'])
+    return 0
+
+
+def pib_tui() -> pathlib.Path:
+    """Return the local picker, which draws the window menu."""
+    override = os.environ.get('SH2PIL_PATH')
+    if override:
+        return pathlib.Path(override)
+    beside = pathlib.Path(__file__).resolve().parent / 'sh2pil'
+    if beside.exists():
+        return beside
+    live = pathlib.Path.home() / '.local/bin/sh2pil'
+    if live.exists():
+        return live
+    found = shutil.which('sh2pil')
+    if found:
+        return pathlib.Path(found)
+    raise SystemExit('pib-open: sh2pil not found; set SH2PIL_PATH or add it to PATH')
+
+
+def window_menu(identifier: str, emit: bool = False) -> int:
+    """Open the picker's next-step menu for one window, as the cmd+. binding asks.
+
+    A failure is reported here and not by the picker, because this process is the overlay:
+    a message on stderr with a wait for a key stays on screen, and the reader learns why the
+    key did nothing instead of watching the overlay close.
+    """
+    try:
+        target = window_target(identifier)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+        return fail(f'pib-open: {error}')
+    command = [str(pib_tui()), '--menu', '--menu-cwd', target['cwd']]
+    if target['server']:
+        command += ['--menu-server', target['server']]
+    if target['stores']:
+        command += ['--menu-stores', ','.join(target['stores'])]
+    if emit:
+        print(shlex.join(command))
+        return 0
+    os.execv(command[0], command)
+    return 0
+
+
+def zmx_remote_new(server: str, cwd: str, place: str, emit: bool = False) -> int:
+    """Start a fresh Pi chat inside a new zmx session on a remote host."""
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    if not pathlib.Path(cwd).is_absolute():
+        return fail('pib-open: remote project directory must be an absolute path')
+    try:
+        taken = zmx_remote_taken_names(server)
+        project = zmx_token(pathlib.PurePosixPath(cwd).name, 'project')
+        name = zmx_free_name(f'pi-{project}', taken)
+        labels = f'project={project}'
+        # The child command runs directly in zmx, not in the remote login shell, so the
+        # shell is named here: /bin/sh exists on every host, and the snippet it runs picks
+        # the login shell that host actually has for Pi's PATH and setup.
+        command = remote_zmx_command('attach', '--labels', labels, name,
+                                     '/bin/sh', '-c', remote_login_command('pi'))
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+        return fail(f'pib-open: could not start remote zmx session on {server}: {error}')
+    remote = with_remote_env(server, f'cd -- {shlex.quote(cwd)} && {command}')
+    argv = [ssh_binary(), '-t', server, remote]
+    return launch(argv, str(pathlib.Path.home()), '', place, emit)
+
+
+def zmx_remote_switch(server: str, name: str, cwd: str, place: str,
+                      emit: bool = False) -> int:
+    """Open an SSH terminal and attach to a named session on a remote host."""
+    if not valid_ssh_destination(server):
+        return fail('pib-open: server must be an SSH config alias or user@host')
+    try:
+        remote_command = remote_zmx_command('attach', name)
+    except ValueError as error:
+        return fail(f'pib-open: {error}')
+    command = [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+               '-t', server, with_remote_env(server, remote_command)]
+    if not cwd or not os.path.isdir(cwd):
+        cwd = str(pathlib.Path.home())
+    return launch(command, cwd, '', zmx_client_place(place), emit)
+
+
+def zmx_switch(name: str, cwd: str, place: str, emit: bool = False,
+               server: str = '') -> int:
+    """Bring the terminal that shows a zmx session forward, or attach a new client.
+
+    This is `switch` for a session that has no pi process to match: zmx knows which window
+    holds a client, and when none does, a client can be created anywhere.
+    """
+    if server:
+        return zmx_remote_switch(server, name, cwd, place, emit)
+    binary = zmx_binary()
+    if not binary:
+        return fail('pib-open: zmx is not installed, so there is no session to open')
+    if name not in zmx_taken_names():
+        # `zmx attach` creates a session when the name is free, which would turn a stale row
+        # or a typo into a new shell instead of an error.
+        return fail(f'pib-open: no zmx session is named {name}')
+    window = zmx_client_window(name)
+    if window is not None:
+        if not emit:
+            print(f'pib-open: switching to {window["label"]}', file=sys.stderr)
+        return focus_window(window, emit)
+    if not cwd or not os.path.isdir(cwd):
+        # The client starts in a directory of its own; the session keeps the cwd it has.
+        cwd = str(pathlib.Path.home())
+    return launch(zmx_client_argv(name, binary), cwd, '', zmx_client_place(place), emit)
+
+
+def zmx_kill(name: str, server: str = '') -> int:
+    """Kill a local or remote zmx session and everything attached to it.
+
+    The caller asks its own question first: the processes the session runs die with it.
+    """
+    if server:
+        if not valid_ssh_destination(server):
+            return fail('pib-open: server must be an SSH config alias or user@host')
+        try:
+            command = remote_zmx_command('kill', name)
+            result = subprocess.run(
+                [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+                 '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server, command],
+                capture_output=True, timeout=15, env=ssh_env())
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            return fail(f'pib-open: could not kill remote zmx session {name} on {server}: {error}')
+        message = (result.stdout + result.stderr).decode('utf-8', 'replace').strip()
+        if result.returncode != 0:
+            return fail('pib-open: could not kill ' + name + ' on ' + server +
+                        (': ' + message if message else ''))
+        print(message or f'pib-open: killed {name} on {server}')
+        return 0
+
+    binary = zmx_binary()
+    if not binary:
+        return fail('pib-open: zmx is not installed, so there is no session to kill')
+    if name not in zmx_taken_names():
+        return fail(f'pib-open: no zmx session is named {name}')
+    result = subprocess.run([binary, 'kill', name], capture_output=True)
+    message = (result.stdout + result.stderr).decode('utf-8', 'replace').strip()
+    if result.returncode != 0:
+        return fail('pib-open: could not kill ' + name + (': ' + message if message else ''))
+    print(message or f'pib-open: killed {name}')
+    return 0
+
+
+def zmx_copy(name: str, server: str = '') -> int:
+    """Print and copy the command that attaches to a local or remote zmx session."""
+    if server:
+        if not valid_ssh_destination(server):
+            return fail('pib-open: server must be an SSH config alias or user@host')
+        try:
+            remote_command = remote_zmx_command('attach', name)
+        except ValueError as error:
+            return fail(f'pib-open: {error}')
+        line = shlex.join([ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
+                           '-t', server, remote_command])
+    else:
+        line = f'zmx attach {shlex.quote(name)}'
+    sys.stdout.write(line + '\n')
+    if shutil.which('pbcopy'):
+        subprocess.run(['pbcopy'], input=line.encode(), check=False)
+    return 0
+
+
+def zmx_history(name: str, lines: int) -> int:
+    """Print the end of a session's own scrollback, as plain text.
+
+    This is what the terminal shows, not the chat's transcript: a session that carries no
+    `pi=` label has nothing else to preview, and it is also what an attach would put on
+    screen.  zmx caps a session's scrollback itself, so `lines` only trims what it returns.
+    """
+    binary = zmx_binary()
+    if not binary:
+        return fail('pib-open: zmx is not installed, so there is no scrollback to read')
+    if name not in zmx_taken_names():
+        return fail(f'pib-open: no zmx session is named {name}')
+    try:
+        result = subprocess.run([binary, 'history', name], capture_output=True)
+    except OSError as error:
+        return fail(f'pib-open: could not run zmx: {error}')
+    if result.returncode != 0:
+        message = result.stderr.decode('utf-8', 'replace').strip()
+        return fail(f'pib-open: could not read {name}' + (': ' + message if message else ''))
+    text = result.stdout.decode('utf-8', 'replace').replace('\r\n', '\n').replace('\r', '\n')
+    rows = [row.rstrip() for row in text.splitlines()]
+    if lines > 0 and len(rows) > lines:
+        rows = rows[-lines:]
+    if rows:
+        sys.stdout.write('\n'.join(rows) + '\n')
+    return 0
+
+
+def focus_window(window: dict, emit: bool = False) -> int:
+    """Bring one terminal forward.  Return 0 when it did, 2 when the medium cannot."""
+    if window['medium'] == 'kitty':
+        command = window['prefix'] + ['focus-window', '--match', f'id:{window["target"]}']
+    elif window['medium'] == 'tmux':
+        command = ['tmux', 'select-window', '-t', window['target']]
+    else:
+        return 2
+    if emit:
+        print(shlex.join(command))
+        return 0
+    result = subprocess.run(command, capture_output=True)
+    if result.returncode != 0:
+        return fail(f'pib-open: could not focus {window["label"]}: '
+                    + result.stderr.decode('utf-8', 'replace').strip())
+    return 0
+
+
+def owner_window(entry: dict, target: str = '') -> tuple[dict | None, str, int]:
+    """Focus only a unique process match, unless the caller selected a terminal explicitly."""
+    windows = session_windows(entry['pids'])
+    if not windows:
+        # zmx hides the window from pi's ancestry, so ask zmx which one holds the session.
+        window = zmx_window(entry['id'], target)
+        if window is not None:
+            return window, 'the zmx session carries this pi session id', 1
+    if target:
+        for window in windows:
+            if window['target'] == target:
+                return window, 'the terminal holds this pi process', len(windows)
+        return None, '', len(windows)
+    if len(windows) != 1:
+        return None, '', len(windows)
+    return windows[0], 'the terminal holds this pi process', 1
+
+
+def live_number(value) -> float:
+    """A timestamp from a record, or 0 when it is missing or unusable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    number = float(value)
+    return number if 0 < number < float('inf') else 0.0
+
+
+def live_text(value) -> str:
+    """One short line of a record's own text, or empty."""
+    if not isinstance(value, str):
+        return ''
+    return ' '.join(value.split())[:60]
+
+
+def live_state(record: dict, now: float | None = None) -> dict:
+    """Read the state a record carries, and whether it can still be believed.
+
+    An older extension wrote no state at all, so a missing, malformed, or unknown state is not
+    an error: the record then says only that the chat is live, and every field but `stale` is
+    empty.  A working state whose clock has stopped is not believed either: `state` is emptied
+    so that a reader cannot show a wedged chat as busy, and what was published is kept in
+    `last_state` so that nothing is lost.
+    """
+    if now is None:
+        now = time.time()
+    published = record.get('state')
+    if not isinstance(published, str) or published not in LIVE_STATES:
+        published = ''
+    at = live_number(record.get('at'))
+    since = live_number(record.get('since'))
+    stale = bool(published) and published in LIVE_WORKING_STATES and not (
+        0 < at and now - at <= LIVE_STATE_STALE)
+    state = '' if stale else published
+    return {
+        'state': state,
+        'last_state': published if stale else '',
+        'detail': live_text(record.get('detail')) if state else '',
+        'label': live_text(record.get('label')) if state == 'blocked' else '',
+        'since': since if state else 0.0,
+        'age': max(0, int(now - since)) if state and since else 0,
+        'stale': stale,
+    }
+
+
+def live_state_column(entry: dict) -> str:
+    """The state as one column of the plain listing: the state, and what it is doing."""
+    state = entry.get('state') or ''
+    if state:
+        detail = entry.get('detail') or ''
+        return f'{state}:{detail}' if detail else state
+    return 'stale' if entry.get('stale') else '-'
+
+
+def live_states(directory: pathlib.Path | None = None, now: float | None = None) -> list[dict]:
+    """Return what every registered chat is doing, and nothing else about it.
+
+    This is the cheap half of `live`.  A state changes on a clock while the process that owns a
+    chat, and the window that shows it, change rarely, so a picker that wants to follow a state
+    reads one small file per chat here instead of paying for the process check, the window scan,
+    and the transcript reads that `live` does.  A record is not validated here: the caller keeps
+    this beside the answer `live` gave, and that is the read which checks the process.
+    """
+    if directory is None:
+        directory = LIVE_DIR
+    if now is None:
+        now = time.time()
+    found = []
+    for path in directory.glob('*.json'):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+            file = record['file']
+            if not isinstance(file, str) or not file:
+                continue
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        found.append({'id': session_id(pathlib.Path(file)), **live_state(record, now)})
+    return found
+
+
+def live_entry(identifier: str) -> dict | None:
+    """Return the live entry for one session id or transcript path, or None."""
+    target = pathlib.Path(identifier)
+    wanted = session_id(target) if target.is_file() else identifier
+    for entry in live_sessions():
+        if entry['id'] == wanted:
+            return entry
+    return None
+
+
+def process_start(pid: int) -> str:
+    """Use the OS process start time to reject stale records after PID reuse."""
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='], capture_output=True)
+    return result.stdout.decode('utf-8', 'replace').strip() if result.returncode == 0 else ''
+
+
+def registered_processes(directory: pathlib.Path | None = None) -> list[dict]:
+    """Only trust records for Pi processes with the same PID and start time."""
+    if directory is None:
+        directory = LIVE_DIR
+    running = {pid for pid, _, _ in pi_processes()}
+    records = []
+    for path in directory.glob('*.json'):
+        try:
+            entry = json.loads(path.read_text(encoding='utf-8'))
+            pid = entry['pid']
+            if (not isinstance(pid, int) or path.name != f'{pid}.json'
+                    or pid not in running or not isinstance(entry['file'], str)
+                    or not isinstance(entry['started'], str)
+                    or not entry['started'] or process_start(pid) != entry['started']):
+                continue
+            records.append(entry)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return records
+
+
+def live_sessions(root: pathlib.Path = SESSIONS_DIR) -> list[dict]:
+    """Return only transcripts registered by a still-running Pi process."""
+    now = time.time()
+    found = []
+    for record in registered_processes():
+        path = pathlib.Path(record['file'])
+        # A custom store must not report sessions from the default store.
+        if path.parent.parent != root or not path.is_file():
+            continue
+        try:
+            written = now - path.stat().st_mtime
+        except OSError:
+            continue
+        found.append({'id': session_id(path), 'cwd': recorded_cwd(path),
+                      'written': int(written), 'pids': [record['pid']], 'certain': True,
+                      'name': session_name(path), 'file': str(path),
+                      **live_state(record, now)})
+    # Ask each medium once, then match every session against that one answer.
+    prefix = kitten_prefix()
+    windows = (kitty_windows(prefix) if prefix else []) + tmux_panes()
+    for entry in found:
+        matches = match_windows(windows, entry['pids'])
+        entry['owner'] = matches[0]['label'] if len(matches) == 1 else ''
+        entry['owner_reason'] = 'the terminal holds this pi process' if len(matches) == 1 else ''
+        entry['owner_choices'] = len(matches)
+        if not matches:
+            # zmx keeps the window out of pi's ancestry, so ask the session's label instead.
+            zmx_match = zmx_window(entry['id'], windows=windows)
+            if zmx_match is not None:
+                entry['owner'] = zmx_match['label']
+                entry['owner_reason'] = 'the zmx session carries this pi session id'
+                entry['owner_choices'] = 1
+    return found
+
+
+def match_windows(windows: list[dict], pids: list[int]) -> list[dict]:
+    """Return the terminals that hold one of these processes."""
+    wanted = set(pids)
+    return [window for window in windows if wanted & set(window['pids'])]
+
+
+def warn_untracked(cwd: str) -> int:
+    """Ask before resuming when an older Pi process has no exact session record."""
+    tracked = {entry['pid'] for entry in registered_processes()}
+    unknown = [pid for pid, process_cwd, _ in pi_processes()
+               if process_cwd == cwd and pid not in tracked]
+    if not unknown:
+        return 0
+    print(f'pib-open: pi process(es) {unknown} run in {cwd} without session tracking; '
+          'one might own this transcript.', file=sys.stderr)
+    print('pib-open: resuming it could create a second writer.', file=sys.stderr)
+    if not sys.stdin.isatty():
+        return 1
+    print('pib-open: resume anyway? [y/N] ', end='', file=sys.stderr, flush=True)
+    return 0 if sys.stdin.readline().strip().lower().startswith('y') else 1
+
+
+def warn_live(entry: dict) -> int:
+    """Warn that another Pi process owns this session, and ask before continuing.
+
+    Return 0 to continue and 1 to stop. Without a terminal, stop unless --force was given.
+    """
+    minutes, seconds = divmod(entry['written'], 60)
+    ago = f'{minutes} min ago' if minutes else f'{seconds} s ago'
+    pids = ', '.join(str(pid) for pid in entry['pids'])
+    print(f'pib-open: pi pid {pids} owns this session; the transcript was written {ago}.',
+          file=sys.stderr)
+    print('pib-open: a second pi on the same transcript interleaves writes to it.',
+          file=sys.stderr)
+    if not sys.stdin.isatty():
+        print('pib-open: no terminal to ask on; refusing the second writer', file=sys.stderr)
+        return 1
+    print('pib-open: resume anyway? [y/N] ', end='', file=sys.stderr, flush=True)
+    try:
+        answer = sys.stdin.readline().strip().lower()
+    except (KeyboardInterrupt, OSError):
+        return 1
+    return 0 if answer.startswith('y') else 1
+
+
+def kitten_prefix() -> list[str] | None:
+    """Return the `kitten @` arguments that reach a live kitty, or None.
+
+    Inside kitty the controlling terminal answers `kitten @ ls` with no KITTY_*
+    variables at all.  Outside kitty (a tmux pane, a desktop launcher), the newest
+    remote-control socket in /tmp that answers `ls` is used.
+    """
+    try:
+        if subprocess.run(['kitten', '@', 'ls'], capture_output=True).returncode == 0:
+            return ['kitten', '@']
+    except OSError:
+        return None
+    try:
+        sockets = sorted(pathlib.Path('/tmp').glob('kitty-*'),
+                         key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for socket in sockets:
+        target = f'unix:{socket}'
+        result = subprocess.run(['kitten', '@', '--to', target, 'ls'], capture_output=True)
+        if result.returncode == 0:
+            return ['kitten', '@', '--to', target]
+    return None
+
+
+def tool_shell(command: str) -> list[str]:
+    """Return the argv of the login shell that runs one tool command."""
+    return [SHELL, '-lc', command]
+
+
+def pi_last() -> pathlib.Path:
+    """Return the helper that renders a transcript, the same one the f4 binding uses."""
+    override = os.environ.get('PIB_PI_LAST')
+    if override:
+        return pathlib.Path(override)
+    beside = pathlib.Path(__file__).resolve().parent / 'pi-last'
+    if beside.exists():
+        return beside
+    live = pathlib.Path.home() / '.local/bin/pi-last'
+    if live.exists():
+        return live
+    found = shutil.which('pi-last')
+    if found:
+        return pathlib.Path(found)
+    raise SystemExit('pib-open: pi-last not found; set PIB_PI_LAST or add it to PATH')
+
+
+PLACEMENTS = ('current', 'tab', 'window', 'pane')
+
+
+# --- zmx sessions -----------------------------------------------------------------------
+#
+# A zmx session keeps its process alive after the terminal that started it goes away, so a
+# chat survives a closed window and can be attached again from anywhere.  It is off unless
+# the shared config asks for it, because it puts a layer between the picker and pi.
+
+
+def config_flag(key: str, default: bool = False) -> bool:
+    """Read one boolean key from the shared pib config.  The last value wins.
+
+    The format is the one the Go picker parses: `key: value` lines, `#` starts a comment.
+    """
+    try:
+        text = CONFIG.read_text(encoding='utf-8')
+    except OSError:
+        return default
+    found = default
+    for line in text.splitlines():
+        name, separator, value = line.split('#', 1)[0].strip().partition(':')
+        if not separator or name.strip() != key:
+            continue
+        text_value = value.strip().lower()
+        if text_value in ('true', 'yes', 'on', '1'):
+            found = True
+        elif text_value in ('false', 'no', 'off', '0'):
+            found = False
+    return found
+
+
+def zmx_binary() -> str:
+    """Return a usable zmx path, or '' when zmx is not installed."""
+    for candidate in ZMX_CANDIDATES:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return ''
+
+
+def zmx_run(arguments: list[str]) -> str:
+    """Run zmx and return its stdout, or '' when zmx is missing or refuses."""
+    binary = zmx_binary()
+    if not binary:
+        return ''
+    try:
+        result = subprocess.run([binary] + arguments, capture_output=True)
+    except OSError:
+        return ''
+    if result.returncode != 0:
+        return ''
+    return result.stdout.decode('utf-8', 'replace')
+
+
+def zmx_token(value: str, fallback: str = 'session') -> str:
+    """Return a zmx-safe token: names and label values allow only [A-Za-z0-9-_.]."""
+    cleaned = re.sub(r'[^A-Za-z0-9-_.]+', '-', value)
+    cleaned = re.sub(r'-{2,}', '-', cleaned).strip('-_.')
+    return cleaned or fallback
+
+
+def zmx_taken_names() -> set[str]:
+    """Every name zmx knows, including sessions that have already ended."""
+    return {line.strip() for line in zmx_run(['ls', '--short']).splitlines() if line.strip()}
+
+
+def zmx_free_name(base: str, taken: set[str] | None = None) -> str:
+    """Return a name no session holds.
+
+    `zmx attach` is an upsert, so a name that is already taken would join the running
+    session instead of starting the requested new session.  Two chats must never share one
+    terminal.
+    """
+    if taken is None:
+        taken = zmx_taken_names()
+    if base not in taken:
+        return base
+    suffix = 2
+    while f'{base}-{suffix}' in taken:
+        suffix += 1
+    return f'{base}-{suffix}'
+
+
+def zmx_session_name(identifier: str) -> str:
+    """Return the zmx session that carries this pi session id, or ''."""
+    return zmx_pi_sessions().get(session_id(pathlib.Path(identifier)), '')
+
+
+def zmx_client_argv(name: str, binary: str) -> list[str]:
+    """Argv for a client that attaches to an existing session, with no command of its own.
+
+    `env -u ZMX_SESSION` keeps a caller that is inside a session from switching that
+    terminal instead of opening a client.  The session replays its own window title, so no
+    title is set here: the chat keeps the name it was given.
+    """
+    return ['env', '-u', 'ZMX_SESSION', f'PIB_ZMX={binary}', binary, 'attach', name]
+
+
+def zmx_client_place(place: str) -> str:
+    """Return the requested place for a client of a zmx session.
+
+    The client stays in the current terminal until detach. The zmx session keeps running
+    after the client exits, and can be attached again later. Every path that starts a client
+    uses the requested placement, whether the session is created now (`pi`, `new`) or
+    attached to later (`attach`, `zmx-switch`).
+    """
+    return place
+
+
+def zmx_attach_argv(argv: list[str], cwd: str, identifier: str, binary: str) -> list[str]:
+    """Wrap one tool command so that it runs in a new zmx session.
+
+    `env -u ZMX_SESSION` matters: a caller that is itself inside a session would otherwise
+    make `zmx attach` switch that terminal instead of creating a new client.  The labels are
+    set as the session is created, so a session cannot be left unlabelled, and PIB_ZMX
+    carries the resolved path into the session for the pib-live extension.
+    """
+    project = zmx_token(pathlib.Path(cwd).name, 'project')
+    labels = f'project={project}'
+    session = session_id(pathlib.Path(identifier))
+    if session:
+        labels += f' pi={session}'
+        base = f'pi-{zmx_token(short_name(session))}'
+    else:
+        # A new chat generates its own id inside the session, so the project names it here
+        # and the pib-live extension adds the id to the label once it exists.
+        base = f'pi-{project}'
+    return ['env', '-u', 'ZMX_SESSION', f'PIB_ZMX={binary}', binary, 'attach',
+            '--labels', labels, zmx_free_name(base)] + argv
+
+
+def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int:
+    """Open a terminal for argv in the asked-for place, or print how to.
+
+    An empty argv means a plain interactive login shell, which is why the `shell`
+    action must not become `zsh -lc ''` (that exits at once).  An empty label means the
+    terminal is left to title itself: kitty keeps its own template and tmux its automatic
+    rename, so the program inside names the window.  `new` relies on that, because pi
+    generates a session name and puts it in the title.
+    """
+    inside = [SHELL, '-lic', shlex.join(argv)] if argv else [SHELL, '-l']
+    printed = f'cd {shlex.quote(cwd)} && {shlex.join(inside)}' if cwd else shlex.join(inside)
+    if emit:
+        print(printed)
+        return 0
+
+    # The picker has suspended itself and handed this process its terminal.  Run the action
+    # there instead of asking tmux or kitty to create another pane, tab, or window.
+    if place == 'current':
+        return subprocess.run(inside, cwd=cwd or None).returncode
+
+    # tmux first: a pane inside kitty keeps $KITTY_LISTEN_ON in its environment, and a kitty
+    # tab outside the pane would leave the medium the caller works in.  That stray variable
+    # made an earlier version open kitty tabs from a tmux pane.
+    if os.environ.get('TMUX'):
+        if place == 'pane':
+            # A split beside the current pane, which is tmux's own idea of "same window".
+            command = ['tmux', 'split-window', '-h']
+        else:
+            # Without a label the window is left to tmux's automatic rename, the tmux
+            # spelling of the same idea: the program inside names the window.
+            command = ['tmux', 'new-window'] + (['-n', label] if label else [])
+        if cwd:
+            command += ['-c', cwd]
+        result = subprocess.run(command + [shlex.join(inside)], capture_output=True)
+        if result.returncode == 0:
+            return 0
+        print('pib-open: tmux refused the new window: '
+              + result.stderr.decode('utf-8', 'replace').strip(), file=sys.stderr)
+
+    prefix = kitten_prefix()
+    if prefix:
+        # kitty's own words are the confusing part: its launch type `window` is a split inside
+        # the current tab, and `os-window` is a separate OS window.  This option says what the
+        # reader means -- tab, window, or pane.
+        # A label pins both titles.  A shell, lazygit, or yazi has no name of its own, so
+        # pinning there is what keeps the tab bar readable; a chat leaves the label empty so that
+        # the program inside names the window, which is the name the reader recognises.
+        command = prefix + ['launch']
+        if label:
+            command += [f'--tab-title={label}', f'--title={label}']
+        if place == 'pane':
+            command += ['--type=window', '--location=vsplit']
+        elif place == 'window':
+            command += ['--type=os-window']
+        else:
+            command += ['--type=tab']
+        if cwd:
+            command.append(f'--cwd={cwd}')
+        result = subprocess.run(command + inside, capture_output=True)
+        if result.returncode == 0:
+            return 0
+        print('pib-open: kitty launch failed: '
+              + result.stderr.decode('utf-8', 'replace').strip(), file=sys.stderr)
+    else:
+        print('pib-open: no kitty and no tmux here; run this:', file=sys.stderr)
+    print(printed)
+    return 0
+
+
+def run_tool(cwd: str, command: list[str], label: str, place: str, emit: bool) -> int:
+    """Run a configured command in a directory, in a terminal or in this one.
+
+    The picker uses this for a directory tool, so the tool is a setting rather than a name
+    compiled into the program.  An empty command is refused: it would open a terminal that
+    closes at once, and the message would close with it.
+    """
+    if not command:
+        return fail('pib-open: run-tool needs a command')
+    return launch(list(command), str(pathlib.Path(cwd).expanduser()), label, place, emit)
+
+
+def short_name(session: str) -> str:
+    """Return a short label for a session id or transcript path."""
+    name = pathlib.Path(session).stem          # <timestamp>_<uuid> for a path
+    return name.split('_', 1)[-1][:8]
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog='pib-open',
+        description='Open a terminal or an editor for one session (kitty, tmux, or print).')
+    commands = parser.add_subparsers(dest='action', required=True)
+
+    def terminal(name: str, help_text: str) -> argparse.ArgumentParser:
+        sub = commands.add_parser(name, help=help_text)
+        sub.add_argument('cwd', help='directory for the new terminal')
+        sub.add_argument('--label', default='',
+                         help='tab and window title; without one the program inside names them')
+        sub.add_argument('--place', default='tab', choices=PLACEMENTS,
+                         help='where the action runs: current pane, tab (default), window '
+                              '(its own OS window), or pane (a new split beside this one)')
+        sub.add_argument('--emit-cmd', action='store_true',
+                         help='print the command instead of running it')
+        return sub
+
+    resume = terminal('pi', 'resume a pi session in its own project')
+    resume.add_argument('session', help='session id, or a transcript path when cwd is gone')
+    opencode_resume = terminal('opencode', 'resume an OpenCode session in its project')
+    opencode_resume.add_argument('session', help='OpenCode session id')
+    claude_resume = terminal('claude', 'resume a Claude Code session in its project')
+    claude_resume.add_argument('session', help='session id, or a transcript path when cwd is gone')
+    claude_resume.add_argument('--fork', action='store_true', help='fork instead of resuming')
+    claude_resume.add_argument('--name', default='',
+                               help='with --fork: the name of the new session, when Claude '
+                                    'Code should carry one')
+    codex_resume = terminal('codex', 'resume a Codex session in its project')
+    codex_resume.add_argument('session', help='Codex session id')
+    codex_resume.add_argument('--fork', action='store_true', help='fork instead of resuming')
+    codex_resume.add_argument('--name', default='',
+                              help='accepted for symmetry; Codex names a fork itself')
+    resume.add_argument('--fork', action='store_true', help='fork instead of resuming')
+    resume.add_argument('--name', default='',
+                        help='with --fork: the name of the new session, so the fork can be '
+                             'told apart from the session it came from')
+    resume.add_argument('--force', action='store_true',
+                        help='resume even when another pi process may own the session')
+
+    terminal('shell', 'open a login shell in a directory')
+    terminal('lazygit', 'open lazygit in a directory')
+    terminal('yazi', 'open yazi in a directory')
+    running = commands.add_parser('run-tool', help='run a configured command in a directory')
+    running.add_argument('--label', default='',
+                         help='tab and window title; without one the program inside names them')
+    running.add_argument('--place', default='tab', choices=PLACEMENTS,
+                         help='where the action runs: current pane, tab (default), window, '
+                              'or pane')
+    running.add_argument('--emit-cmd', action='store_true',
+                         help='print the command instead of running it')
+    running.add_argument('cwd', help='directory for the new terminal')
+    running.add_argument('command', nargs=argparse.REMAINDER,
+                         help='the command and its arguments')
+    directory_editor = terminal('editor-dir', 'open an editor in a directory')
+    directory_editor.add_argument('--editor', default=os.environ.get('EDITOR') or DEFAULT_EDITOR,
+                                  help='editor to open (default: %(default)s)')
+    terminal('new', 'start a new pi session in a directory')
+    terminal('opencode-new', 'start a new OpenCode session in a directory')
+    terminal('claude-new', 'start a new Claude Code session in a directory')
+    terminal('codex-new', 'start a new Codex session in a directory')
+
+    switching = terminal('switch', 'bring the running session forward, or resume it')
+    switching.add_argument('session', help='session id, or a transcript path when cwd is gone')
+    switching.add_argument('--force', action='store_true',
+                           help='resume without asking even when a pi process may own it')
+
+    attaching = terminal('attach', 'open a terminal on the zmx session that runs a chat')
+    attaching.add_argument('session', help='session id of the running chat')
+
+    retitling = commands.add_parser('retitle',
+                                    help="give the terminal that runs a session its name")
+    retitling.add_argument('session', help='session id, or a transcript path')
+    retitling.add_argument('--name', default='', help='the title to set (default: the session name)')
+    retitling.add_argument('--emit-cmd', action='store_true',
+                           help='print the commands instead of running them')
+
+    focusing = commands.add_parser('focus', help='bring the terminal that runs a session forward')
+    focusing.add_argument('session', help='session id, or a transcript path')
+    focusing.add_argument('--target', default='',
+                          help='focus this window or pane instead of the best match')
+    focusing.add_argument('--emit-cmd', action='store_true',
+                          help='print the focus command instead of running it')
+
+    editing = commands.add_parser('editor', help='show a transcript in the current terminal')
+    editing.add_argument('transcript', help='path to the transcript')
+    editing.add_argument('--editor', default=os.environ.get('EDITOR') or DEFAULT_EDITOR,
+                         help='editor to open (default: %(default)s)')
+    editing.add_argument('--emit-cmd', action='store_true',
+                         help='print the command instead of running it')
+
+    live = commands.add_parser('live', help='list sessions a running pi process may own')
+    live.add_argument('--json', action='store_true', help='write JSON instead of rows')
+    live.add_argument('--sessions-dir', default=str(SESSIONS_DIR),
+                      help='pi session root (default: %(default)s)')
+
+    states = commands.add_parser('state', help='list what the registered chats are doing')
+    states.add_argument('--json', action='store_true', help='write JSON instead of rows')
+    states.add_argument('--live-dir', default=str(LIVE_DIR),
+                        help='record directory (default: %(default)s)')
+
+    remote_states = commands.add_parser(
+        'state-remote', help='ask a host what its own registered chats are doing')
+    remote_states.add_argument('server', help='SSH config alias or user@host')
+    remote_states.add_argument('--json', action='store_true', help='write JSON instead of rows')
+
+    zmx_listing = commands.add_parser('zmx-list', help='list the live zmx sessions')
+    zmx_listing.add_argument('--json', action='store_true', help='write JSON instead of rows')
+
+    zmx_connecting = commands.add_parser('zmx-connect',
+                                         help='establish a persistent SSH master connection')
+    zmx_connecting.add_argument('server', help='SSH config alias or user@host')
+    zmx_connecting.add_argument('--check', action='store_true',
+                                help='report whether a master exists; exit 1 when it does not')
+    zmx_connecting.add_argument('--restart', action='store_true',
+                                help='end an existing master, then establish a new one')
+    zmx_connecting.add_argument('--no-wait', action='store_true',
+                                help='do not wait for a keypress when the connect fails')
+
+    zmx_remote_listing = commands.add_parser('zmx-remote-list',
+                                             help='list live zmx sessions on an SSH host')
+    zmx_remote_listing.add_argument('server', help='SSH config alias or user@host')
+    zmx_remote_listing.add_argument('--json', action='store_true',
+                                    help='write JSON instead of rows')
+
+    zmx_remote_project_listing = commands.add_parser(
+        'zmx-remote-projects', help='list zoxide projects on an SSH host')
+    zmx_remote_project_listing.add_argument('server', help='SSH config alias or user@host')
+    zmx_remote_project_listing.add_argument('--json', action='store_true',
+                                            help='write JSON instead of paths')
+
+    zmx_reading = commands.add_parser('zmx-history',
+                                      help="print a zmx session's own scrollback")
+    zmx_reading.add_argument('name', help='the session name zmx knows')
+    zmx_reading.add_argument('--lines', type=int, default=200,
+                             help='how many lines of the end to print (default: %(default)s)')
+
+    zmx_switching = commands.add_parser('zmx-switch',
+                                        help='bring a zmx session forward, or attach a client')
+    zmx_switching.add_argument('name', help='zmx session name')
+    zmx_switching.add_argument('--cwd', default='',
+                               help='directory for a new client (default: $HOME)')
+    zmx_switching.add_argument('--server', default='',
+                               help='SSH config alias or user@host for a remote session')
+    zmx_switching.add_argument('--place', default='tab', choices=PLACEMENTS,
+                               help='where a new client runs: current pane, tab (default), '
+                                    'window (its own OS window), or pane (a new split)')
+    zmx_switching.add_argument('--emit-cmd', action='store_true',
+                               help='print the command instead of running it')
+
+    zmx_remote_new_parser = commands.add_parser(
+        'zmx-remote-new', help='start a new Pi chat in a remote zmx session')
+    zmx_remote_new_parser.add_argument('server', help='SSH config alias or user@host')
+    zmx_remote_new_parser.add_argument('cwd', help='absolute project directory on the server')
+    zmx_remote_new_parser.add_argument('--place', default='tab', choices=PLACEMENTS,
+                                       help='where the SSH client runs')
+    zmx_remote_new_parser.add_argument('--emit-cmd', action='store_true',
+                                       help='print the command instead of running it')
+
+    zmx_killing = commands.add_parser('zmx-kill', help='kill a zmx session and its clients')
+    zmx_killing.add_argument('name', help='zmx session name')
+    zmx_killing.add_argument('--server', default='',
+                             help='SSH config alias or user@host for a remote session')
+
+    zmx_copying = commands.add_parser('zmx-copy',
+                                      help='print and copy the command that attaches to a session')
+    zmx_copying.add_argument('name', help='zmx session name')
+    zmx_copying.add_argument('--server', default='',
+                             help='SSH config alias or user@host for a remote session')
+
+    remote_session_listing = commands.add_parser(
+        'session-remote-list', help="list a remote host's Pi or OpenCode sessions")
+    remote_session_listing.add_argument('server', help='SSH config alias or user@host')
+    remote_session_listing.add_argument('--harness', default='pi',
+                                        help='store to read: one name, a comma-separated set, '
+                                             'or all (default: %(default)s)')
+    remote_session_listing.add_argument('--live', action='store_true',
+                                        help='ask the host which sessions its pi runs')
+    remote_session_listing.add_argument('--json', action='store_true',
+                                        help='write JSON instead of rows')
+
+    remote_session_showing = commands.add_parser(
+        'session-remote-show', help="print the end of a remote host's transcript")
+    remote_session_showing.add_argument('server', help='SSH config alias or user@host')
+    remote_session_showing.add_argument('session', help='session id on the remote host')
+    remote_session_showing.add_argument('--harness', choices=SESSION_HARNESSES,
+                                        default='pi', help='store to read (default: %(default)s)')
+    remote_session_showing.add_argument('--file', default='',
+                                        help='the transcript path that host reported; a Pi '
+                                             'read needs no store scan with it')
+    remote_session_showing.add_argument('--tail', type=int, default=0,
+                                        help='print only the last N lines')
+
+    remote_session_file = commands.add_parser(
+        'session-remote-file', help="print one of a remote host's transcripts as it is stored")
+    remote_session_file.add_argument('server', help='SSH config alias or user@host')
+    remote_session_file.add_argument('file', help='the absolute transcript path on that host')
+
+    remote_session_opening = commands.add_parser(
+        'session-remote-open', help='open a terminal on a session at another host')
+    remote_session_opening.add_argument('server', help='SSH config alias or user@host')
+    remote_session_opening.add_argument('cwd', help='absolute project directory on the server')
+    remote_session_opening.add_argument('session', nargs='?', default='',
+                                        help='session id; without one a new chat starts there')
+    remote_session_opening.add_argument('--harness', choices=SESSION_HARNESSES,
+                                        default='pi', help='store to read (default: %(default)s)')
+    remote_session_opening.add_argument('--fork', action='store_true',
+                                        help='fork instead of resuming')
+    remote_session_opening.add_argument('--name', default='',
+                                        help='with --fork: the name of the new session')
+    remote_session_opening.add_argument('--label', default='',
+                                        help='tab and window title; without one the program '
+                                             'inside names them')
+    remote_session_opening.add_argument('--place', default='tab', choices=PLACEMENTS,
+                                        help='where the SSH client runs: current pane, tab '
+                                             '(default), window, or pane')
+    remote_session_opening.add_argument('--emit-cmd', action='store_true',
+                                        help='print the command instead of running it')
+
+    remote_tooling = commands.add_parser(
+        'tool-remote', help='open a terminal on a directory tool at another host')
+    remote_tooling.add_argument('server', help='SSH config alias or user@host')
+    remote_tooling.add_argument('cwd', help="absolute project directory on the server; an "
+                                               "empty string starts in the host's home")
+    remote_tooling.add_argument('tool', help='the tool to run there')
+    remote_tooling.add_argument('--label', default='',
+                                help='tab and window title; without one the tool and the '
+                                     'directory name it')
+    remote_tooling.add_argument('--place', default='tab', choices=PLACEMENTS,
+                                help='where the SSH client runs: current pane, tab '
+                                     '(default), window, or pane')
+    remote_tooling.add_argument('--emit-cmd', action='store_true',
+                                help='print the command instead of running it')
+
+    remote_shell = commands.add_parser(
+        'shell-remote', help="open a login shell on another host, in its own directory")
+    remote_shell.add_argument('server', help='SSH config alias or user@host')
+    remote_shell.add_argument('cwd', help="absolute project directory on the server; an "
+                                            "empty string starts in the host's home")
+    remote_shell.add_argument('--label', default='',
+                              help='tab and window title; without one the shell and the '
+                                   'directory name it')
+    remote_shell.add_argument('--place', default='tab', choices=PLACEMENTS,
+                              help='where the SSH client runs: current pane, tab '
+                                   '(default), window, or pane')
+    remote_shell.add_argument('--emit-cmd', action='store_true',
+                              help='print the command instead of running it')
+
+    remote_editor = commands.add_parser(
+        'editor-remote', help="open a directory in another host's own editor")
+    remote_editor.add_argument('server', help='SSH config alias or user@host')
+    remote_editor.add_argument('cwd', help="absolute project directory on the server; an "
+                                             "empty string starts in the host's home")
+    remote_editor.add_argument('--editor', default='',
+                               help="what to run there; without one the host's $EDITOR is "
+                                    'used, and nvim when it has neither')
+    remote_editor.add_argument('--label', default='',
+                               help='tab and window title; without one the editor names the '
+                                    'window')
+    remote_editor.add_argument('--place', default='tab', choices=PLACEMENTS,
+                               help='where the SSH client runs: current pane, tab '
+                                    '(default), window, or pane')
+    remote_editor.add_argument('--emit-cmd', action='store_true',
+                               help='print the command instead of running it')
+
+    remote_pasting = commands.add_parser(
+        'paste-remote', help="store this clipboard's image on a host and print its path")
+    remote_pasting.add_argument('server', help='SSH config alias or user@host')
+    remote_pasting.add_argument('--emit-cmd', action='store_true',
+                                help='print the command instead of running it; nothing is read '
+                                     'and the name in the printed path is a sample')
+
+    window_pasting = commands.add_parser(
+        'paste-window', help="store this clipboard's image for the session in a window")
+    window_pasting.add_argument('--window', default='',
+                                help='the kitty window id; the cmd+shift+v binding passes '
+                                     '@active-kitty-window-id, and without one KITTY_WINDOW_ID '
+                                     'is used, so the key works from inside a window too')
+
+    window_targeting = commands.add_parser(
+        'window-target', help='report the host and project one kitty window acts on')
+    window_targeting.add_argument('--window', default='',
+                                  help='the kitty window id; the cmd+. binding passes '
+                                       '@active-kitty-window-id')
+    window_targeting.add_argument('--json', action='store_true',
+                                  help='write JSON instead of rows')
+
+    window_sessioning = commands.add_parser(
+        'window-session', help='report the host and session one kitty window runs')
+    window_sessioning.add_argument('--window', default='',
+                                   help='the kitty window id; the f3 and f4 bindings pass '
+                                        '@active-kitty-window-id')
+    window_sessioning.add_argument('--harness', default='pi',
+                                   choices=('pi', 'claude', 'codex'),
+                                   help='the store the window runs, for a window that does '
+                                        'not name it itself (default: %(default)s)')
+    window_sessioning.add_argument('--json', action='store_true',
+                                   help='write JSON instead of rows')
+
+    window_menus = commands.add_parser(
+        'window-menu', help="open the picker's next-step menu for the window the reader is in")
+    window_menus.add_argument('--window', default='',
+                              help='the kitty window id; the cmd+. binding passes '
+                                   '@active-kitty-window-id')
+    window_menus.add_argument('--emit-cmd', action='store_true',
+                              help='print the command instead of running it')
+
+    remote_session_copying = commands.add_parser(
+        'session-remote-copy', help='print and copy the command that opens a remote session')
+    remote_session_copying.add_argument('server', help='SSH config alias or user@host')
+    remote_session_copying.add_argument('session', help='session id on the remote host')
+    remote_session_copying.add_argument('--harness', choices=SESSION_HARNESSES,
+                                        default='pi', help='store to read (default: %(default)s)')
+    remote_session_copying.add_argument('--cwd', default='',
+                                        help='remote project directory to start in')
+
+    remote_session_deleting = commands.add_parser(
+        'session-remote-delete', help="delete one of a remote host's transcripts")
+    remote_session_deleting.add_argument('server', help='SSH config alias or user@host')
+    remote_session_deleting.add_argument('session', help='session id on the remote host')
+    remote_session_deleting.add_argument('--harness', choices=SESSION_HARNESSES,
+                                         default='pi', help='store to read (default: %(default)s)')
+    remote_session_deleting.add_argument('--force', action='store_true',
+                                         help='delete even when a pi process is running it there')
+
+    remote_session_pruning = commands.add_parser(
+        'session-remote-prune', help="delete a remote host's old sessions and zmx sessions")
+    remote_session_pruning.add_argument('server', help='SSH config alias or user@host')
+    remote_session_pruning.add_argument('--older-than', required=True, metavar='AGE',
+                                        help='an age such as 1d, 3h, 10m, or 1d3h10m')
+    # A store name, a comma-separated set, or all: the host is read the way this picker reads
+    # it, so one prune covers every store the picker shows.
+    remote_session_pruning.add_argument('--harness', default='all',
+                                        help='stores to read: one, a set, or all '
+                                             '(default: %(default)s)')
+    remote_session_pruning.add_argument('--zmx', action='store_true',
+                                        help="also end that host's own old zmx sessions")
+    remote_session_pruning.add_argument('--yes', action='store_true',
+                                        help='delete; without it the selection is only reported')
+    remote_session_pruning.add_argument('--force', action='store_true',
+                                        help='also delete a session its pi process still writes')
+
+    remote_harnesses = commands.add_parser(
+        'harnesses-remote', help='report which session stores a remote host has')
+    remote_harnesses.add_argument('server', help='SSH config alias or user@host')
+    remote_harnesses.add_argument('--json', action='store_true',
+                                  help='write JSON instead of rows')
+
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+
+    if args.action == 'live':
+        root = pathlib.Path(args.sessions_dir).expanduser()
+        entries = live_sessions(root)
+        if args.json:
+            json.dump(entries, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for entry in entries:
+                kind = 'certain' if entry['certain'] else 'probable'
+                owner = entry['owner'] or 'host unknown'
+                print(f'{entry["id"]}\t{entry["written"]}s\t{entry["pids"]}\t{kind}\t'
+                      f'{owner}\t{entry["cwd"]}\t{live_state_column(entry)}')
+        return 0
+
+    if args.action == 'state':
+        entries = live_states(pathlib.Path(args.live_dir).expanduser())
+        if args.json:
+            json.dump(entries, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for entry in entries:
+                print(f'{entry["id"]}\t{live_state_column(entry)}\t{entry["detail"]}\t{entry["age"]}s')
+        return 0
+
+    if args.action == 'focus':
+        return focus_session(args.session, args.emit_cmd, args.target)
+
+    if args.action == 'zmx-connect':
+        return zmx_connect(args.server, args.check, not args.no_wait, args.restart)
+
+    if args.action == 'zmx-remote-list':
+        try:
+            entries = zmx_remote_sessions(args.server)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: remote zmx list on {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not list zmx sessions on {args.server}: {error}')
+        if args.json:
+            json.dump(entries, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for entry in entries:
+                state = 'attached' if entry['clients'] else 'detached'
+                print(f"{entry['name']}\t{state}\t{entry['created']}\t{entry['cwd']}")
+        return 0
+
+    if args.action == 'zmx-remote-projects':
+        try:
+            paths = zmx_remote_projects(args.server)
+        except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not list zoxide projects on {args.server}: {error}')
+        if args.json:
+            json.dump(paths, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for path in paths:
+                print(path)
+        return 0
+
+    if args.action == 'zmx-list':
+        entries = zmx_sessions()
+        if args.json:
+            json.dump(entries, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for entry in entries:
+                state = 'attached' if entry['clients'] else 'detached'
+                print(f'{entry["name"]}\t{state}\t{entry["created"]}\t{entry["cwd"]}\t'
+                      f'{entry["chat"]}')
+        return 0
+
+    if args.action == 'zmx-switch':
+        return zmx_switch(args.name, args.cwd, args.place, args.emit_cmd, args.server)
+
+    if args.action == 'zmx-remote-new':
+        return zmx_remote_new(args.server, args.cwd, args.place, args.emit_cmd)
+
+    if args.action == 'zmx-history':
+        return zmx_history(args.name, args.lines)
+
+    if args.action == 'zmx-kill':
+        return zmx_kill(args.name, args.server)
+
+    if args.action == 'zmx-copy':
+        return zmx_copy(args.name, args.server)
+
+    if args.action == 'session-remote-list':
+        try:
+            rows = session_remote_list(args.server, args.harness, args.live)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: listing sessions on {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not list sessions on {args.server}: {error}')
+        if args.json:
+            json.dump(rows, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for row in rows:
+                state = 'live' if row.get('live') else 'gone' if not row.get('alive') else ''
+                print(f"{row.get('id', '')}\t{row.get('modified', 0)}\t{state}\t"
+                      f"{row.get('name', '')}\t{row.get('project', '')}\t{row.get('file', '')}")
+        return 0
+
+    if args.action == 'state-remote':
+        try:
+            entries = state_remote(args.server)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: asking {args.server} what its chats are doing timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not ask {args.server} what its chats are doing: '
+                        f'{error}')
+        if args.json:
+            json.dump(entries, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for entry in entries:
+                print(f'{entry["id"]}\t{live_state_column(entry)}\t{entry.get("detail", "")}\t'
+                      f'{entry.get("age", 0)}s')
+        return 0
+
+    if args.action == 'harnesses-remote':
+        try:
+            stores = harnesses_remote(args.server)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: asking {args.server} for its session stores timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not ask {args.server} for its session stores: {error}')
+        if args.json:
+            json.dump(stores, sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            for store in stores:
+                mark = 'present' if store.get('present') else 'absent'
+                line = f"{store.get('harness', ''):<9} {mark}"
+                if store.get('reason'):
+                    line += f"  ({store['reason']})"
+                print(line)
+        return 0
+
+    if args.action == 'session-remote-show':
+        try:
+            text = session_remote_show(args.server, args.session, args.harness, args.tail,
+                                       args.file)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: reading {args.session} on {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not read {args.session} on {args.server}: {error}')
+        sys.stdout.write(text)
+        return 0
+
+    if args.action == 'session-remote-file':
+        try:
+            data = session_remote_file(args.server, args.file)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: reading {args.file} on {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not read {args.file} on {args.server}: {error}')
+        write_bytes(data)
+        return 0
+
+    if args.action == 'session-remote-open':
+        return session_remote_open(args.server, args.cwd, args.session, args.harness,
+                                   args.fork, args.name, args.label, args.place,
+                                   args.emit_cmd)
+
+    if args.action == 'session-remote-copy':
+        return session_remote_copy(args.server, args.session, args.harness, args.cwd)
+
+    if args.action == 'run-tool':
+        return run_tool(args.cwd, args.command, args.label, args.place, args.emit_cmd)
+
+    if args.action == 'tool-remote':
+        return tool_remote(args.server, args.cwd, args.tool, args.label, args.place,
+                           args.emit_cmd)
+
+    if args.action == 'shell-remote':
+        return shell_remote(args.server, args.cwd, args.label, args.place, args.emit_cmd)
+
+    if args.action == 'editor-remote':
+        return editor_remote(args.server, args.cwd, args.editor, args.label, args.place,
+                             args.emit_cmd)
+
+    if args.action == 'paste-remote':
+        return paste_remote(args.server, args.emit_cmd)
+
+    if args.action == 'window-target':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('pib-open: window-target needs --window, or a kitty window to run in')
+        return print_window_target(identifier, args.json)
+
+    if args.action == 'window-session':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('pib-open: window-session needs --window, or a kitty window to run in')
+        return print_window_session(identifier, args.harness, args.json)
+
+    if args.action == 'window-menu':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('pib-open: window-menu needs --window, or a kitty window to run in')
+        return window_menu(identifier, args.emit_cmd)
+
+    if args.action == 'paste-window':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('pib-open: paste-window needs --window, or a kitty window to run in')
+        return paste_window(identifier)
+
+    if args.action == 'session-remote-delete':
+        try:
+            return session_remote_delete(args.server, args.session, args.harness, args.force)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: deleting {args.session} on {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not delete {args.session} on {args.server}: {error}')
+
+    if args.action == 'session-remote-prune':
+        arguments = ['--older-than', args.older_than, '--harness', args.harness, '--json']
+        if args.zmx:
+            arguments.append('--zmx')
+        if args.yes:
+            arguments.append('--yes')
+        if args.force:
+            arguments.append('--force')
+        try:
+            return session_remote_prune(args.server, arguments)
+        except subprocess.TimeoutExpired:
+            return fail(f'pib-open: pruning {args.server} timed out')
+        except (OSError, RuntimeError, ValueError) as error:
+            return fail(f'pib-open: could not prune {args.server}: {error}')
+
+    if args.action == 'retitle':
+        return retitle_session(args.session, args.name, args.emit_cmd)
+
+    if args.action == 'editor':
+        command = [sys.executable, str(pi_last()), '--session',
+                   str(pathlib.Path(args.transcript).expanduser()), '--full',
+                   '--nvim', args.editor]
+        if args.emit_cmd:
+            print(shlex.join(command))
+            return 0
+        if not sys.stdin.isatty():
+            print(shlex.join(command))
+            return 0
+        return subprocess.run(command, check=False).returncode
+
+    if args.action == 'switch':
+        entry = live_entry(args.session)
+        if entry is not None:
+            window, reason, choices = owner_window(entry)
+            if window is not None:
+                if not args.emit_cmd:
+                    print(f'pib-open: switching to {window["label"]} because {reason}',
+                          file=sys.stderr)
+                return focus_window(window, args.emit_cmd)
+            # No terminal shows it.  A zmx session can be attached from anywhere, so attach
+            # to it rather than resume: a resume would add a second writer to the transcript.
+            if zmx_session_name(entry['id']):
+                return open_terminal('attach', args)
+            print('pib-open: no unique terminal for this running session; a resume '
+                  'would add a second writer to the transcript', file=sys.stderr)
+        # Nothing running, or nowhere reachable: behave like `pi`, which asks when unsure.
+        return open_terminal('pi', args)
+
+    return open_terminal(args.action, args)
+
+
+# focus_session brings the terminal that runs a session forward.  Exit 1 means nothing is
+# running and exit 2 means it runs somewhere this cannot reach: the caller resumes in both
+# cases, and asks first when a second writer is possible.
+def retitle_session(identifier: str, name: str, emit: bool = False) -> int:
+    """Give the terminal that runs a session the session's name.
+
+    A rename writes the transcript, and the pi process that owns the session never notices:
+    it keeps the name it read at startup and would rewrite its own title from that.  Setting
+    the tab and window titles now keeps the tab bar in step with the store until that process
+    exits.  Exit 1 means nothing is running, 2 means no reachable terminal.
+    """
+    entry = live_entry(identifier)
+    if entry is None:
+        print('pib-open: nothing is running that session', file=sys.stderr)
+        return 1
+    title = name or squeeze(str(entry.get('name') or ''))
+    if not title:
+        return fail('pib-open: no name to set on the terminal')
+    window, reason, choices = owner_window(entry)
+    if window is None:
+        if choices:
+            return fail(f'pib-open: {choices} terminals hold a pi in that project, none matched')
+        pids = ', '.join(str(pid) for pid in entry['pids'])
+        print(f'pib-open: pi pid {pids} runs {entry["cwd"]}, on a host this cannot reach',
+              file=sys.stderr)
+        return 2
+
+    if window['medium'] == 'kitty':
+        # A pane is a window in kitty's words, so the window gets the title and the tab is
+        # matched through the window it contains.
+        commands = [
+            window['prefix'] + ['set-window-title', '--match', f'id:{window["target"]}', title],
+            window['prefix'] + ['set-tab-title', '--match',
+                                f'window_id:{window["target"]}', title],
+        ]
+    elif window['medium'] == 'tmux':
+        commands = [['tmux', 'rename-window', '-t', window['target'], title]]
+    else:
+        return 2
+
+    for command in commands:
+        if emit:
+            print(shlex.join(command))
+            continue
+        result = subprocess.run(command, capture_output=True)
+        if result.returncode != 0:
+            return fail('pib-open: could not retitle: '
+                        + result.stderr.decode('utf-8', 'replace').strip())
+    if not emit:
+        print(f'pib-open: {window["label"]} is now titled {title!r} because {reason}',
+              file=sys.stderr)
+    return 0
+
+
+def focus_session(identifier: str, emit: bool = False, target: str = '') -> int:
+    entry = live_entry(identifier)
+    if entry is None:
+        print('pib-open: nothing is running that session', file=sys.stderr)
+        return 1
+    window, reason, choices = owner_window(entry, target)
+    if window is None:
+        pids = ', '.join(str(pid) for pid in entry['pids'])
+        if choices:
+            return fail(f'pib-open: {choices} terminals hold this pi process; '
+                        f'no unique terminal matched {target or "the session"}')
+        print(f'pib-open: pi pid {pids} runs {entry["cwd"]}, on a host this cannot reach',
+              file=sys.stderr)
+        return 2
+    if not emit:
+        print(f'pib-open: switching to {window["label"]} because {reason}',
+              file=sys.stderr)
+    return focus_window(window, emit)
+
+
+def open_terminal(action: str, args: argparse.Namespace) -> int:
+    """Open a terminal for a Pi, OpenCode, or Claude Code chat, shell, lazygit, or yazi."""
+    cwd = str(pathlib.Path(args.cwd).expanduser())
+    if action == 'attach':
+        # Attach to the zmx session that runs this chat.  The session's own directory and
+        # size are already its own, so only the client is started here.
+        binary = zmx_binary()
+        if not binary:
+            return fail('pib-open: zmx is not installed, so there is no session to attach to')
+        name = zmx_session_name(args.session)
+        if not name:
+            return fail(f'pib-open: no zmx session carries {args.session}')
+        return launch(zmx_client_argv(name, binary), cwd, '',
+                      zmx_client_place(args.place), args.emit_cmd)
+    if action == 'pi':
+        fork = getattr(args, 'fork', False)
+        force = getattr(args, 'force', False)
+        # `switch` is a resume and has no --name, which is why every read of it is defensive:
+        # the same code serves `pi`, `pi --fork`, and `switch`, and only the first two can
+        # carry a name.
+        name = getattr(args, 'name', '')
+        with_flag = '--fork' if fork else '--session'
+        argv_tool = ['pi', with_flag, args.session]
+        if name and not fork:
+            # A resumed session already has a name; naming it here would rename it instead.
+            return fail('pib-open: --name applies to --fork, not to a resume')
+        if fork and name:
+            argv_tool += ['--name', name]
+        # A fork is a different session, so its own name belongs in the window name a
+        # terminal server would use: the caller's label describes the session that was
+        # picked, which is the one being left.  kitty drops this later (above), where pi
+        # names the window itself.
+        label = args.label or f'pi {short_name(args.session)}'
+        if fork and name:
+            label = f'pi {name}'
+        if not fork and not force and not args.emit_cmd:
+            # A resume writes into an existing transcript; a fork writes a new one.
+            entry = live_entry(args.session)
+            if entry is not None and warn_live(entry):
+                return 1
+            if entry is None and warn_untracked(cwd):
+                return 1
+    elif action == 'opencode':
+        argv_tool = ['opencode', '--session', args.session]
+        label = args.label or f'opencode {short_name(args.session)}'
+    elif action == 'opencode-new':
+        argv_tool = ['opencode']
+        label = args.label or f'opencode {os.path.basename(cwd)}'
+    elif action == 'claude':
+        # Claude Code resumes a session id or a transcript path, and a fork is the same
+        # command with a session id of its own.  Its own store holds no process record to
+        # ask, so a resume here never asks about a second writer.
+        argv_tool = ['claude', '--resume', args.session]
+        if getattr(args, 'fork', False):
+            argv_tool.append('--fork-session')
+            name = getattr(args, 'name', '')
+            if name:
+                argv_tool += ['--name', name]
+        label = args.label or f'claude {short_name(args.session)}'
+    elif action == 'claude-new':
+        argv_tool = ['claude']
+        label = args.label or f'claude {os.path.basename(cwd)}'
+    elif action == 'codex':
+        # Codex resumes a session id from any directory, and `codex fork` copies the
+        # conversation under a session id of its own.  Its store keeps no process-to-session
+        # record, so a resume here never asks about a second writer.
+        argv_tool = ['codex', 'fork' if getattr(args, 'fork', False) else 'resume',
+                     args.session]
+        if getattr(args, 'fork', False) and getattr(args, 'name', ''):
+            # Codex names a fork itself; there is no flag to carry a name of ours.
+            print('pib-open: Codex names a fork itself; the given name is not used',
+                  file=sys.stderr)
+        label = args.label or f'codex {short_name(args.session)}'
+    elif action == 'codex-new':
+        argv_tool = ['codex']
+        label = args.label or f'codex {os.path.basename(cwd)}'
+    elif action == 'new':
+        # No transcript is reused, so there is no question about a second writer and no name
+        # to reuse.  The label stays empty unless the caller asked for one: pi titles its own
+        # window from the session name it generates, and a title set here would sit in the tab
+        # bar as a stale copy of that name.
+        argv_tool = ['pi']
+        label = args.label
+    elif action == 'lazygit':
+        argv_tool = ['lazygit']
+        label = args.label or f'lazygit {os.path.basename(cwd)}'
+    elif action == 'yazi':
+        # yazi browses the directory it starts in; the caller passes the project directory
+        # itself, while lazygit alone climbs to the repository top.
+        argv_tool = ['yazi']
+        label = args.label or f'yazi {os.path.basename(cwd)}'
+    elif action == 'editor-dir':
+        if not os.path.isdir(cwd):
+            return fail(f'pib-open: {cwd} is not a directory')
+        argv_tool = shlex.split(args.editor)
+        if not argv_tool:
+            return fail('pib-open: editor command is empty')
+        argv_tool.append(cwd)
+        label = args.label or f'nvim {os.path.basename(cwd)}'
+    else:
+        argv_tool = []
+        label = args.label or f'shell {os.path.basename(cwd)}'
+
+    if cwd and not os.path.isdir(cwd):
+        if action in ('pi', 'claude', 'codex'):
+            # A recorded project directory can be gone (188 of 427 sessions on
+            # 2026-09-25, 202 of 435 on 2026-09-26).  A Pi session resumes from a transcript
+            # path and a Claude Code or Codex one resumes from its id from any directory, so
+            # all of them start in $HOME instead of refusing.  The caller decides whether to
+            # pass the id or the path.
+            print(f'pib-open: {cwd} is gone; starting in $HOME instead', file=sys.stderr)
+            cwd = str(pathlib.Path.home())
+        else:
+            return fail(f'pib-open: {cwd} does not exist')
+
+    # A chat is worth keeping alive across terminals; a shell, lazygit, yazi, or an editor
+    # is not.
+    # The flag is off unless the shared config turns it on, and a machine without zmx keeps
+    # the plain terminal instead of opening a window that would fail at once.
+    binary = zmx_binary() if config_flag('zmx') else ''
+    if binary and action in ZMX_ACTIONS:
+        args.place = zmx_client_place(args.place)
+        argv_tool = zmx_attach_argv(argv_tool, cwd, getattr(args, 'session', ''), binary)
+
+    # Pi names its own window, as `π - <session name> - <project>`, and kitty's
+    # --title/--tab-title pin a title so that a later change by the program never lands: a
+    # resumed chat would keep showing the short session id instead of the name.  A shell,
+    # lazygit, or yazi has no name of its own, so the label is still worth pinning there.
+    if action == 'pi':
+        label = ''
+
+    return launch(argv_tool, cwd, label, args.place, args.emit_cmd)
+
+
+if __name__ == '__main__':
+    try:
+        code = main(sys.argv[1:])
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    except KeyboardInterrupt:
+        code = 130
+    except Exception:
+        note_crash()
+        code = 1
+    sys.exit(code)

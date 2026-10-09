@@ -1,0 +1,11 @@
+# Build output
+/dist/
+/sh2pil
+
+# Python bytecode from the helper tests
+__pycache__/
+*.pyc
+
+# Editor and OS noise
+.DS_Store
+*.swp

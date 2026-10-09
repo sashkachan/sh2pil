@@ -1,0 +1,678 @@
+#!/usr/bin/env python3
+"""Open the last message of a pi session, or the whole transcript, in nvim.
+
+Usage:
+    pi-last [--window ID] [--session FILE] [--role assistant|user] [--full]
+            [--sessions-dir DIR] [--nvim /path/to/nvim] [--print-session]
+
+pi writes one JSONL transcript per session under
+~/.pi/agent/sessions/--<cwd with "/" changed to "-">--/<timestamp>_<uuid>.jsonl.
+It adds one line per message, when that message ends.  This helper finds the
+session of one window and returns its last message, so a key binding can show
+it in nvim for copying.
+
+--full renders the whole transcript instead of the last message: a markdown
+header, then every message in file order.  Consecutive assistant messages and
+their tool results form one assistant section.  Thinking, tool calls and tool
+results become folded `####` sections, because tool output is most of a
+transcript by volume and would otherwise bury the conversation.  The fold
+ranges travel to nvim in $PI_FOLDS, not as text in the buffer, so nothing in a
+transcript can change the folding.  Opens at the top; `G` jumps to the end.
+
+Session choice:
+    1. --session FILE wins.
+    2. Otherwise the session that the window title names.  pi sets the title to
+       "<app title> - <session name> - <cwd basename>", so the focused window
+       names its own session.  This matters: a second pi session in the same
+       project, such as a background agent, writes its transcript more often,
+       and then the newest file is not the session in front of the user.
+    3. Otherwise the newest session whose recorded cwd is the window cwd.  With
+       --window the script reads the window from kitty (`kitten @ ls`); in a
+       shell inside kitty it uses $KITTY_WINDOW_ID.  Without kitty it uses $PWD.
+    4. Otherwise the newest session of any directory, plus a warning on stderr.
+
+Pass --window @active-kitty-window-id in a kitty binding, and add
+--allow-remote-control to the binding: a child of a key binding has no KITTY_*
+environment, and this helper needs the remote-control socket.  The f3 and f4
+bindings call `pib last`, which asks a Pi window exactly this helper and reads a
+Claude Code or Codex window from its own store.
+
+A transcript holds only the messages that pi has ended.  During a turn the
+buffer shows a hint instead of stale text.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+DEFAULT_SESSIONS_DIR = pathlib.Path.home() / '.pi/agent/sessions'
+ROLES = ('assistant', 'user')
+
+# pi's terminal title, from its updateTerminalTitle(): APP_TITLE is "π", or the
+# package name when a piConfig name is set.
+TITLE_APPS = ('π', 'pi')
+TITLE_SEP = ' - '
+# Stop the name search after this many transcripts, to keep the key binding fast.
+MAX_NAME_SCAN = 200
+
+# Same flags as the scrollback bindings: plain text, no accidental save, `q`
+# quits.  Reading from a pipe marks the buffer modified, so clear that flag.
+NVIM_ARGS = [
+    '-c', 'setf markdown',
+    '-c', 'set nomodified nomodifiable nolist',
+    '-c', 'nnoremap q ZQ',
+    '-',
+]
+
+# --full folds its folded sections by line number: manual folds, built here from
+# the ranges in $PI_FOLDS.  nvim reads no fold syntax from the buffer, so the
+# transcript cannot fold itself by quoting something.  `za` opens one section,
+# `zR` all, `zM` closes all.
+FOLD_COMMAND = ('lua vim.wo.foldmethod = "manual"; '
+                'for a, b in vim.env.PI_FOLDS:gmatch("(%d+),(%d+)") do '
+                'vim.cmd(a .. "," .. b .. "fold") end')
+FOLD_ENV = 'PI_FOLDS'
+
+
+def nvim_args(folds: list[tuple[int, int]]) -> list[str]:
+    """Return the nvim command line, with fold creation only when needed."""
+    args = [arg for arg in NVIM_ARGS if arg != '-']
+    if folds:
+        args += ['-c', FOLD_COMMAND]
+    return args + ['-']
+
+
+def fold_env(folds: list[tuple[int, int]]) -> dict[str, str]:
+    """Return the environment for nvim, carrying the fold ranges in $PI_FOLDS."""
+    env = dict(os.environ)
+    if folds:
+        env[FOLD_ENV] = ';'.join(f'{start},{end}' for start, end in folds)
+    return env
+
+
+def squeeze(value: str) -> str:
+    """Collapse whitespace, so a title and a stored name compare equal."""
+    return ' '.join(value.split())
+
+
+def parse_title(title: str) -> tuple[str, str]:
+    """Split a pi window title into (session name, cwd basename)."""
+    parts = title.split(TITLE_SEP)
+    if len(parts) < 2 or squeeze(parts[0]) not in TITLE_APPS:
+        return '', ''
+    rest = [squeeze(part) for part in parts[1:]]
+    if len(rest) == 1:
+        return '', rest[0]
+    # A session name may itself contain the separator, so join the middle parts.
+    return TITLE_SEP.join(rest[:-1]), rest[-1]
+
+
+def first_entry(path: pathlib.Path) -> dict:
+    """Return the session header, which carries the cwd, or an empty dict."""
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            return json.loads(handle.readline())
+    except (OSError, ValueError):
+        return {}
+
+
+def session_cwd(path: pathlib.Path) -> str:
+    value = first_entry(path).get('cwd')
+    return value if isinstance(value, str) else ''
+
+
+def session_name(path: pathlib.Path) -> str:
+    """Return the last name that pi stored for one session."""
+    name = ''
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                if '"session_info"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get('type') == 'session_info':
+                    # A later entry without a name clears the name.
+                    value = entry.get('name')
+                    name = value if isinstance(value, str) else ''
+    except OSError as error:
+        print(f'pi-last: cannot read {path}: {error}', file=sys.stderr)
+    return squeeze(name)
+
+
+def entries(path: pathlib.Path):
+    """Yield the JSON entries of one transcript.
+
+    Skip a line that does not parse: pi may be writing it while we read it.
+    """
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict):
+                    yield entry
+    except OSError as error:
+        print(f'pi-last: cannot read {path}: {error}', file=sys.stderr)
+
+
+def part_text(content: object) -> str:
+    """Join the text blocks of one message content value."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ''
+    blocks = []
+    for part in content:
+        if isinstance(part, dict) and part.get('type') == 'text':
+            text = part.get('text')
+            if isinstance(text, str) and text.strip():
+                blocks.append(text)
+    return '\n\n'.join(blocks)
+
+
+def last_message(path: pathlib.Path, role: str) -> str:
+    """Return the last message of one role that has text."""
+    text = ''
+    for entry in entries(path):
+        if entry.get('type') != 'message':
+            continue
+        message = entry.get('message') or {}
+        if message.get('role') != role:
+            continue
+        found = part_text(message.get('content'))
+        if found:
+            text = found
+    return text
+
+
+def stamp(value: object) -> str:
+    """Turn a message timestamp (milliseconds since the epoch) into a clock time."""
+    try:
+        return time.strftime('%H:%M:%S', time.localtime(int(str(value)) / 1000))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ''
+
+
+def text_lines(text: str) -> list[str]:
+    """Split text into buffer lines, and drop the blank lines at both ends.
+
+    Every value that goes into the buffer must pass through here, so that a
+    buffer line number always equals an index in the rendered line list.  The
+    fold ranges are line numbers, and an embedded newline would break them.
+    """
+    lines = text.split('\n')
+    while lines and not lines[0].strip():
+        del lines[0]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def trimmed(text: str) -> str:
+    """Drop the blank lines at both ends, but keep the indentation of the first."""
+    return '\n'.join(text_lines(text))
+
+
+def longest_backticks(text: str) -> int:
+    """Return the longest run of backticks in text, to pick a safe code fence."""
+    longest = run = 0
+    for char in text:
+        run = run + 1 if char == '`' else 0
+        longest = max(longest, run)
+    return longest
+
+
+def fenced(text: str, lang: str = '') -> list[str]:
+    """Wrap text in a code fence that its own backticks cannot close."""
+    ticks = '`' * max(3, longest_backticks(text) + 1)
+    return [f'{ticks}{lang}'] + text.split('\n') + [ticks, '']
+
+
+class Transcript:
+    """Markdown lines for one transcript, plus the line ranges nvim must fold.
+
+    A folded section is a `####` heading and its body.  nvim gets the ranges by
+    number (see nvim_args), so nothing in the text can change the folding.
+    """
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.folds: list[tuple[int, int]] = []
+
+    def add(self, lines: list[str]) -> None:
+        self.lines += lines
+
+    def add_doc(self, other: 'Transcript') -> None:
+        """Append another transcript, moving its fold ranges to the new lines."""
+        offset = len(self.lines)
+        self.lines += other.lines
+        self.folds += [(start + offset, end + offset) for start, end in other.folds]
+
+    def add_fold(self, title: str, body: list[str]) -> None:
+        block = [f'#### {title}', ''] + body
+        while block and not block[-1].strip():
+            block.pop()
+        start = len(self.lines) + 1
+        self.folds.append((start, start + len(block) - 1))
+        self.lines += block + ['']
+
+
+def heading(title: str, when: str = '') -> list[str]:
+    """Return a level-2 heading for one message section, and a blank line."""
+    return [f'## {title} — {when}' if when else f'## {title}', '']
+
+
+def text_blocks(content: object) -> list[str]:
+    """Return the plain prose of one message, as markdown lines."""
+    blocks: list[list[str]] = []
+    if isinstance(content, str):
+        blocks.append(text_lines(content))
+    elif isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get('type') == 'text':
+                text = part.get('text')
+                if isinstance(text, str):
+                    blocks.append(text_lines(text))
+            elif part.get('type') == 'image':
+                blocks.append(['[image]'])
+    lines: list[str] = []
+    for block in blocks:
+        if block:
+            lines += block + ['']
+    return lines
+
+
+def assistant_parts(doc: Transcript, content: object) -> bool:
+    """Add the prose, thinking and tool calls of one assistant message."""
+    added = False
+    for part in content if isinstance(content, list) else []:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get('type')
+        if kind == 'text':
+            text = part.get('text')
+            if isinstance(text, str):
+                block = text_lines(text)
+                if block:
+                    doc.add(block + [''])
+                    added = True
+        elif kind == 'thinking':
+            thinking = part.get('thinking')
+            if isinstance(thinking, str):
+                block = text_lines(thinking)
+                if block:
+                    doc.add_fold('thinking', block)
+                    added = True
+        elif kind == 'toolCall':
+            name = str(part.get('name') or 'tool')
+            arguments = part.get('arguments')
+            try:
+                data = json.dumps(arguments, indent=2, ensure_ascii=False)
+            except (TypeError, ValueError):
+                data = str(arguments)
+            doc.add_fold(f'tool call: {name}', fenced(data, 'json'))
+            added = True
+    return added
+
+
+def error_result(message: dict) -> bool:
+    """Read message.isError, which is a JSON boolean but could arrive as a string."""
+    value = message.get('isError')
+    return bool(value) and str(value).lower() != 'false'
+
+
+def tool_result(doc: Transcript, message: dict) -> None:
+    """Add one tool result as a folded section."""
+    name = str(message.get('toolName') or 'tool')
+    title = f'tool result: {name}' + (' (error)' if error_result(message) else '')
+    text = trimmed(part_text(message.get('content'))) or '(no output)'
+    doc.add_fold(title, fenced(text))
+
+
+def render_entries(source, doc: Transcript) -> tuple[dict, str, str, str, int]:
+    """Render one sequence of transcript entries into doc.
+
+    Return the session header, the model, the thinking level, the stored name, and how many
+    messages carried text.  Whole sessions and tails share this, so the two cannot drift.
+    """
+    header: dict = {}
+    model = level = name = ''
+    count = 0
+    turn_open = False
+    for entry in source:
+        kind = entry.get('type')
+        if kind == 'session':
+            header = entry
+        elif kind == 'model_change':
+            model = '/'.join(str(entry.get(key) or '')
+                             for key in ('provider', 'modelId')).strip('/')
+        elif kind == 'thinking_level_change':
+            level = str(entry.get('thinkingLevel') or '')
+        elif kind == 'session_info':
+            name = squeeze(str(entry.get('name') or ''))
+        elif kind == 'message':
+            message = entry.get('message') or {}
+            role = str(message.get('role') or 'message')
+            when = stamp(message.get('timestamp'))
+            if role == 'assistant':
+                parts = Transcript()
+                if not assistant_parts(parts, message.get('content')):
+                    continue
+                if not turn_open:
+                    doc.add(heading('assistant', when))
+                    turn_open = True
+                doc.add_doc(parts)
+            elif role == 'toolResult':
+                tool_result(doc, message)
+            else:
+                turn_open = False
+                prose = text_blocks(message.get('content'))
+                if not prose:
+                    continue
+                doc.add(heading(role, when) + prose)
+            count += 1
+    return header, model, level, name, count
+
+
+# A tail reads only the end of the transcript: parsing and rendering a 2.5 MB session to
+# show its last few hundred lines took about 0.3 s, which is what made the preview feel
+# slow.  The window is widened when a single huge record fills it.
+TAIL_WINDOW = 192 * 1024
+TAIL_WINDOW_LIMIT = 8 * 1024 * 1024
+
+
+def tail_entries(path: pathlib.Path, window: int) -> list[dict]:
+    """Return the complete entries in the last window bytes of a transcript."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    start = max(0, size - window)
+    try:
+        with path.open('rb') as handle:
+            handle.seek(start)
+            blob = handle.read()
+    except OSError:
+        return []
+    lines = blob.decode('utf-8', 'replace').split('\n')
+    if start > 0:
+        # The first line of a window is usually cut mid-record, and the last may still be
+        # growing, so both ends are handled by the same tolerance as a full read.
+        lines = lines[1:]
+    found = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            found.append(entry)
+    return found
+
+
+def safe_tail_start(lines: list[str], start: int) -> int:
+    """Move a cut forward when it lands inside a fenced code block.
+
+    The preview renders the markdown, and a tail that began inside an open fence would make
+    the renderer style everything after it as code.
+    """
+    fenced = False
+    for line in lines[:start]:
+        if line.startswith('```'):
+            fenced = not fenced
+    if not fenced:
+        return start
+    for index in range(start, len(lines)):
+        if lines[index].startswith('```'):
+            return index + 1
+    return len(lines)
+
+
+def next_block_start(lines: list[str], start: int, lookahead: int = 400) -> int:
+    """Move a cut forward to the next message heading.
+
+    A raw cut lands in the middle of a message, which reads as a fragment (" said").  Headings
+    are where messages begin, and a tail is for reading.
+    """
+    for index in range(start, min(len(lines), start + lookahead)):
+        if lines[index].startswith('## ') or lines[index].startswith('#### '):
+            return index
+    return start
+
+
+def render_tail(path: pathlib.Path, wanted: int) -> tuple[str, int, list[tuple[int, int]]]:
+    """Render enough of the end of a transcript to fill wanted markdown lines.
+
+    Read-only and tail-only: no header block, and no fold ranges, because a tail is for a
+    glance, not for the folding viewer.
+    """
+    if path is None or wanted <= 0:
+        return '', 0, []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return '', 0, []
+    window = TAIL_WINDOW
+    lines: list[str] = []
+    count = 0
+    while True:
+        doc = Transcript()
+        _header, _model, _level, _name, count = render_entries(tail_entries(path, window), doc)
+        lines = '\n'.join(doc.lines).rstrip('\n').split('\n') if doc.lines else []
+        if count and len(lines) >= wanted:
+            break
+        if window >= TAIL_WINDOW_LIMIT or window >= size:
+            break
+        window *= 4
+    if not count:
+        return '', 0, []
+    start = safe_tail_start(lines, max(0, len(lines) - wanted))
+    start = next_block_start(lines, start)
+    body = lines[start:]
+    return '… earlier in this transcript\n\n' + '\n'.join(body) + '\n', count, []
+
+
+def render_full(path: pathlib.Path | None, display: str = '') -> tuple[str, int,
+                                                                  list[tuple[int, int]]]:
+    """Render one whole transcript as markdown.
+
+    Return the text, the number of messages rendered, and the fold ranges.  `display` is the
+    path a reader is told the transcript lives at, which is not the path being read when the
+    file is a local copy of one on another machine.
+    """
+    if path is None:
+        return '', 0, []
+    doc = Transcript()
+    header, model, level, name, count = render_entries(entries(path), doc)
+    if not count:
+        return '', 0, []
+    cwd = str(header.get('cwd') or '')
+    label = name or 'pi session'
+    if cwd:
+        label = f'{label} — {os.path.basename(cwd)}'
+    lines = [f'# {label}', '']
+    facts = (('session', str(header.get('id') or '')),
+             ('cwd', cwd),
+             ('started', str(header.get('timestamp') or '')),
+             ('model', model),
+             ('thinking', level),
+             ('file', display or str(path)))
+    lines += [f'- {key}: {value}' for key, value in facts if value]
+    lines += ['', '---', '']
+    out = Transcript()
+    out.add(lines)
+    out.add_doc(doc)
+    return '\n'.join(out.lines).rstrip() + '\n', count, out.folds
+
+
+def kitty_window(window: str) -> tuple[str, str]:
+    """Ask kitty for the cwd and the title of a window.  Return '' on failure."""
+    try:
+        result = subprocess.run(['kitten', '@', 'ls'], capture_output=True)
+    except OSError:
+        return '', ''
+    if result.returncode != 0:
+        return '', ''
+    try:
+        os_windows = json.loads(result.stdout)
+    except ValueError:
+        return '', ''
+    for os_window in os_windows:
+        for tab in os_window.get('tabs', []):
+            for win in tab.get('windows', []):
+                if str(win.get('id')) == str(window):
+                    cwd = win.get('cwd')
+                    title = win.get('title')
+                    return (cwd if isinstance(cwd, str) else '',
+                            title if isinstance(title, str) else '')
+    return '', ''
+
+
+def newest_first(root: pathlib.Path) -> list[pathlib.Path]:
+    """List transcript files, newest first."""
+    files = []
+    for path in root.glob('*/*.jsonl'):
+        try:
+            files.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    return [path for _, path in sorted(files, reverse=True)]
+
+
+def pick_session(args: argparse.Namespace) -> tuple[pathlib.Path | None, str]:
+    """Choose a transcript.  Return the path and a warning, if any."""
+    if args.session:
+        return pathlib.Path(args.session).expanduser(), ''
+    root = pathlib.Path(args.sessions_dir).expanduser()
+    if not root.is_dir():
+        return None, f'pi-last: no session directory at {root}'
+    files = newest_first(root)
+    if not files:
+        return None, f'pi-last: no transcripts in {root}'
+
+    cwd = title = ''
+    if args.window:
+        cwd, title = kitty_window(args.window)
+    name, basename = parse_title(title)
+
+    if name:
+        # The title of this window names its session.  Match on the project name
+        # from the title first: that costs one line per transcript.
+        pool = [path for path in files
+                if not basename or os.path.basename(session_cwd(path)) == basename]
+        for path in pool[:MAX_NAME_SCAN]:
+            if session_name(path) == name:
+                return path, ''
+        # The project name of the title may not match the recorded cwd.  Fall
+        # back to the session name alone, which pi derives from the first task.
+        for path in files[:MAX_NAME_SCAN]:
+            if session_name(path) == name:
+                return path, ''
+
+    if not cwd:
+        cwd = os.getcwd()
+    for path in files:
+        if session_cwd(path) == cwd:
+            return path, ''
+    warning = f'pi-last: no session for {cwd}; using the newest session instead'
+    return files[0], warning
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog='pi-last',
+        description='Show the last message of a pi session in nvim, or print it.')
+    parser.add_argument('--window', default='',
+                        help='kitty window id, for example @active-kitty-window-id')
+    parser.add_argument('--session', default='',
+                        help='transcript file; skips the session search')
+    parser.add_argument('--display-path', default='',
+                        help='the transcript path to name in the header, when the file that '
+                             'is read is a copy of it')
+    parser.add_argument('--role', default='assistant', choices=ROLES,
+                        help='which message to show (default: assistant)')
+    parser.add_argument('--full', action='store_true',
+                        help='show the whole transcript, not the last message')
+    parser.add_argument('--tail', type=int, default=0, metavar='N',
+                        help='with --full, render only the last N lines, reading only the '
+                             'end of the transcript (for previews)')
+    parser.add_argument('--sessions-dir', default=str(DEFAULT_SESSIONS_DIR),
+                        help='pi session root (default: %(default)s)')
+    parser.add_argument('--nvim', default=None,
+                        help='open this nvim instead of printing to stdout')
+    parser.add_argument('--print-session', action='store_true',
+                        help='write the chosen transcript to stderr')
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    if args.window.startswith('@'):
+        # kitty did not substitute the placeholder; fall back to this window
+        args.window = os.environ.get('KITTY_WINDOW_ID', '')
+    elif not args.window:
+        # In a shell inside kitty, use the window that holds the shell.
+        args.window = os.environ.get('KITTY_WINDOW_ID', '')
+
+    path, warning = pick_session(args)
+    if warning:
+        print(warning, file=sys.stderr)
+    if args.print_session:
+        print(f'pi-last: session {path}' if path else 'pi-last: session none',
+              file=sys.stderr)
+
+    where = (os.path.basename(args.display_path) if args.display_path
+             else path.name if path else 'any session')
+    folds: list[tuple[int, int]] = []
+    if args.full and args.tail:
+        text, count, folds = render_tail(path, args.tail) if path else ('', 0, [])
+    elif args.full:
+        text, count, folds = render_full(path, args.display_path)
+    else:
+        text = last_message(path, args.role) if path else ''
+    if args.full:
+        hint = '' if text else f'pi-last: no messages written yet in {where}'
+    else:
+        hint = '' if text else f'pi-last: no {args.role} message written yet in {where}'
+    if hint:
+        print(hint, file=sys.stderr)
+
+    if args.nvim:
+        return subprocess.run([args.nvim] + nvim_args(folds),
+                              input=(text or hint).encode(), env=fold_env(folds),
+                              check=False).returncode
+    sys.stdout.write(text if text.endswith('\n') else text + '\n')
+    return 0 if text else 1
+
+
+if __name__ == '__main__':
+    try:
+        code = main(sys.argv[1:])
+    except BrokenPipeError:
+        # A reader went away early (pi-last | head, or a pager quit).  Point
+        # stdout at /dev/null so the interpreter's final flush cannot raise
+        # again, and exit quietly.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    except KeyboardInterrupt:
+        code = 130
+    sys.exit(code)
