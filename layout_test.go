@@ -1259,3 +1259,89 @@ func TestFooterShowsTheActiveFilter(t *testing.T) {
 		t.Fatalf("footer does not show the active filter: %q", footer)
 	}
 }
+
+// TestOneQueryDrivesBothPanes pins the shared filter: one query narrows the project list and
+// the zmx pane together, and the footer badge reports both counts.
+func TestOneQueryDrivesBothPanes(t *testing.T) {
+	chat := session{ID: "ses_1", Name: "api login", Project: "repo", CWD: "/tmp/repo"}
+	zmx := session{ID: "ses_2", Name: "api agent", ZmxOnly: true, ZmxName: "pi-api", Project: "api"}
+	m := model{view: viewSessions, width: 120, height: 20,
+		expanded: map[string]bool{}, live: map[string]liveInfo{}, cache: map[string]preview{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{},
+			Groups: []group{{Project: "repo", CWD: "/tmp/repo", Sessions: []session{chat}}},
+			Zmx:    []session{zmx}}}}
+	m.query = "api"
+	m.rebuildRows()
+	if rows := m.filtered(); len(rows) != 2 || rows[1].ID != chat.ID {
+		t.Fatalf("project pane rows = %#v, want the matched session under its header", rows)
+	}
+	if len(m.zmxRows) != 1 || m.zmxRows[0].ZmxName != "pi-api" {
+		t.Fatalf("zmx rows = %#v, want the same query applied there", m.zmxRows)
+	}
+	footer := m.footerView()
+	if !strings.Contains(footer, "filter: api") || !strings.Contains(footer, "1 session match") ||
+		!strings.Contains(footer, "1 zmx match") {
+		t.Fatalf("footer = %q, want the query and both counts", footer)
+	}
+	m.query = "nothing-here"
+	m.rebuildRows()
+	if len(m.zmxRows) != 0 {
+		t.Fatalf("zmx rows for an unmatched query = %#v, want none", m.zmxRows)
+	}
+}
+
+// TestHeaderHighlightsTheProjectMatch pins that the match marks reach the project cell, not
+// only the session name.
+func TestHeaderHighlightsTheProjectMatch(t *testing.T) {
+	m := model{view: viewSessions, width: 100, height: 20, expanded: map[string]bool{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "api", CWD: "/srv/api", Sessions: []session{{ID: "ses_1", Name: "login"}}},
+		}}}}
+	m.query = "api"
+	m.rebuildRows()
+	view := m.projectsView()
+	if !strings.Contains(view, matchSty.Render("a")) || !strings.Contains(view, matchSty.Render("p")) {
+		t.Fatalf("the project header carries no match marks: %q", view)
+	}
+}
+
+// TestGroupsRankByBestMatch pins the ranking: a prefix match sorts above a match inside a
+// word when a query is active.
+func TestGroupsRankByBestMatch(t *testing.T) {
+	m := model{view: viewSessions, width: 100, height: 20, expanded: map[string]bool{},
+		data: map[string]targetData{"local": {Loaded: true, Target: target{}, Groups: []group{
+			{Project: "my-api-tool", CWD: "/srv/my-api-tool"},
+			{Project: "api", CWD: "/srv/api"},
+		}}}}
+	m.query = "api"
+	m.rebuildRows()
+	rows := m.filtered()
+	if len(rows) != 2 || rows[0].Project != "api" {
+		t.Fatalf("ranked groups = %#v, want the prefix match first", rows)
+	}
+}
+
+// TestScopedTermsRestrictTheField pins the prefixes: @ the project, # the session name, ~ the
+// path, and host: the host.  A bare term still searches every field.
+func TestScopedTermsRestrictTheField(t *testing.T) {
+	row := session{ID: "ses_1", Name: "fix login", Project: "api", CWD: "/srv/api",
+		Server: "build-host"}
+	for _, test := range []struct {
+		query string
+		want  bool
+	}{
+		{"@api", true},
+		{"@login", false},
+		{"#login", true},
+		{"#api", false},
+		{"~/srv", true},
+		{"~nomatch", false},
+		{"host:build", true},
+		{"host:other", false},
+		{"api login", true},
+	} {
+		if ok, _ := matchesRow(test.query, row); ok != test.want {
+			t.Errorf("matchesRow(%q) = %t, want %t", test.query, ok, test.want)
+		}
+	}
+}

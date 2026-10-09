@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -408,7 +409,8 @@ func (m *model) rebuildRows() {
 	data := m.data[m.targetLabel()]
 	rows := make([]session, 0, len(data.Groups))
 	groups, sessions, inZmx, live, waiting := 0, 0, 0, 0, 0
-	for _, group := range data.Groups {
+	ordered := m.rankGroups(data.Groups)
+	for _, group := range ordered {
 		if group.Ignored != m.showIgnored {
 			continue
 		}
@@ -471,6 +473,29 @@ func (m *model) rebuildRows() {
 	m.groupCount, m.sessionCount = groups, sessions
 	m.inZmxCount, m.liveCount, m.waitingCount = inZmx, live, waiting
 	m.clampCursor()
+}
+
+// rankGroups orders the groups of one target while a query is active: the group that answers
+// the query best comes first.  The cached read order is left alone, and with no query the
+// order is the one the read gave.
+func (m *model) rankGroups(groups []group) []group {
+	if strings.TrimSpace(m.query) == "" {
+		return groups
+	}
+	type scored struct {
+		group group
+		score int
+	}
+	ranked := make([]scored, 0, len(groups))
+	for _, g := range groups {
+		ranked = append(ranked, scored{group: g, score: groupMatchScore(m.query, g)})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score < ranked[j].score })
+	ordered := make([]group, 0, len(ranked))
+	for _, entry := range ranked {
+		ordered = append(ordered, entry.group)
+	}
+	return ordered
 }
 
 // visibleSessions keeps the sessions a window already shows, when the toggle is on: those are
@@ -539,23 +564,42 @@ func (m *model) matchGroup(g group) (bool, []session) {
 }
 
 // matchProject reports whether every term of a query lands in the project's label or its
-// path, which is the same rule matchesRow applies to a session.
+// path, which is the same rule matchesRow applies to a session.  A term scoped to a field a
+// project header does not have cannot match the header; its sessions still can.
 func matchProject(query, project, cwd string) bool {
 	for _, term := range strings.Fields(query) {
-		if ok, _ := matchCell(term, project); ok {
+		scope, value := scopedTerm(term)
+		if value == "" {
 			continue
 		}
-		if ok, _ := matchCell(term, cwd); ok {
-			continue
+		switch scope {
+		case "project":
+			if ok, _ := matchCell(value, project); !ok {
+				return false
+			}
+		case "cwd":
+			if ok, _ := matchCell(value, cwd); !ok {
+				return false
+			}
+		case "":
+			if ok, _ := matchCell(value, project); ok {
+				continue
+			}
+			if ok, _ := matchCell(value, cwd); ok {
+				continue
+			}
+			return false
+		default:
+			return false
 		}
-		return false
 	}
 	return true
 }
 
-// matchZmx applies the zmx pane's own search, which never touches the project pane's query.
+// matchZmx applies the same filter the project pane uses: one query drives both panes, so a
+// reader who narrowed the list does not have to retype it for each.
 func (m *model) matchZmx(rows []session) []session {
-	query := strings.TrimSpace(m.zmxQuery)
+	query := strings.TrimSpace(m.query)
 	if query == "" {
 		return rows
 	}
@@ -629,16 +673,10 @@ func (m *model) offsetPtr() *int {
 }
 
 func (m *model) queryPtr() *string {
-	if m.view == viewZmx {
-		return &m.zmxQuery
-	}
 	return &m.query
 }
 
 func (m *model) queryCursorPtr() *int {
-	if m.view == viewZmx {
-		return &m.zmxQueryCursor
-	}
 	return &m.queryCursor
 }
 
@@ -983,6 +1021,27 @@ func highlight(text string, marks []int) string {
 			continue
 		}
 		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// highlightBase is highlight with a base style: the runes the query missed keep the style the
+// cell would have on its own, and the matched ones stand out inside it.
+func highlightBase(text string, marks []int, base lipgloss.Style) string {
+	if len(marks) == 0 {
+		return base.Render(text)
+	}
+	wanted := make(map[int]bool, len(marks))
+	for _, index := range marks {
+		wanted[index] = true
+	}
+	var out strings.Builder
+	for index, r := range []rune(text) {
+		if wanted[index] {
+			out.WriteString(matchSty.Render(string(r)))
+			continue
+		}
+		out.WriteString(base.Render(string(r)))
 	}
 	return out.String()
 }
@@ -1364,7 +1423,7 @@ func (m *model) sessionRowView(s session, marks map[string][]int, selected bool,
 		case !s.Alive:
 			middle += "  " + goneSty.Render(project)
 		case marks["project"] != nil:
-			middle += "  " + accentSty.Render(project)
+			middle += "  " + highlightBase(project, marks["project"], accentSty)
 		default:
 			middle += "  " + dimSty.Render(project)
 		}
@@ -1433,14 +1492,14 @@ func (m *model) zmxView() string {
 	}
 	head := accentSty.Render(zmxTag) + " " + titleSty.Render("zmx sessions") + " " +
 		dimSty.Render(fmt.Sprintf("(%d)", len(rows)))
-	if query := strings.TrimSpace(m.zmxQuery); query != "" {
+	if query := strings.TrimSpace(m.query); query != "" {
 		head += " " + dimSty.Render("/"+trim(query, 20))
 	}
 	height := m.zmxPaneHeight() - 1
 	lines := make([]string, 0, max(0, height))
 	last := min(len(rows), m.zmxOffset+height)
 	for index := m.zmxOffset; index < last; index++ {
-		_, marks := matchesRow(m.zmxQuery, rows[index])
+		_, marks := matchesRow(m.query, rows[index])
 		lines = append(lines, m.rowView(rows[index], marks, index == cursor))
 	}
 	return head + "\n" + strings.Join(lines, "\n")
@@ -1579,6 +1638,14 @@ func (m *model) zmxSessionView(s session) string {
 	return strings.Join(append(head, visible...), "\n")
 }
 
+// filterBadge names the active filter and where it landed.  One query drives both panes, so
+// the badge carries both counts and the scope is never in doubt.
+func (m *model) filterBadge() string {
+	return filterSty.Render(" filter: "+trim(strings.TrimSpace(m.query), 40)+" ") + "  " +
+		plural(m.sessionCount, "session match") + " · " + plural(len(m.zmxRows), "zmx match") +
+		" · esc clears"
+}
+
 func (m *model) footerView() string {
 	status := m.status
 	if m.searching {
@@ -1590,10 +1657,8 @@ func (m *model) footerView() string {
 		switch {
 		case m.focus == paneFocusPreview:
 			status = "transcript preview"
-		case strings.TrimSpace(*m.queryPtr()) != "":
-			status = filterSty.Render(" filter: "+
-				trim(strings.TrimSpace(*m.queryPtr()), 40)+" ") + "  " +
-				plural(len(m.filtered()), "match") + " · esc clears"
+		case strings.TrimSpace(m.query) != "":
+			status = m.filterBadge()
 		case m.view == viewZmx:
 			status = "zmx sessions · enter attaches or focuses · [ ] move between the panes"
 		case m.showIgnored:
@@ -2055,6 +2120,11 @@ func min(a, b int) int {
 func plural(count int, noun string) string {
 	if count == 1 {
 		return "1 " + noun
+	}
+	if strings.HasSuffix(noun, "ch") || strings.HasSuffix(noun, "sh") ||
+		strings.HasSuffix(noun, "s") || strings.HasSuffix(noun, "x") ||
+		strings.HasSuffix(noun, "z") {
+		return fmt.Sprintf("%d %ses", count, noun)
 	}
 	return fmt.Sprintf("%d %ss", count, noun)
 }

@@ -142,13 +142,11 @@ type model struct {
 	showPrev         bool
 	status           string
 	pending          string // an action waiting for a yes on a live session
-	query            string // the search of the project pane
+	query            string // the filter, which drives both panes at once
 	searching        bool   // the search field of the active pane is open
 	queryCursor      int
 	cursor           int
 	offset           int
-	zmxQuery         string // the search of the zmx pane, which the project search never touches
-	zmxQueryCursor   int
 	zmxCursor        int
 	zmxOffset        int
 	width            int

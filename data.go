@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -964,17 +966,128 @@ func matchCell(query, text string) (bool, []int) {
 	return true, idx
 }
 
+// matchScore ranks one query against one field: an exact match beats a prefix, a prefix beats
+// a match that starts a word, that beats a match inside a word, and any substring beats a
+// subsequence.  It returns -1 when there is no match.
+func matchScore(query, text string) int {
+	q := strings.ToLower(strings.TrimSpace(query))
+	t := strings.ToLower(text)
+	if q == "" {
+		return 0
+	}
+	if t == q {
+		return 0
+	}
+	if strings.HasPrefix(t, q) {
+		return 1
+	}
+	if at := strings.Index(t, q); at >= 0 {
+		if isWordStart(t, at) {
+			return 2 + at
+		}
+		return 100 + at
+	}
+	if ok, _ := matchCell(q, t); ok {
+		return 1000 + len(t)
+	}
+	return -1
+}
+
+// isWordStart reports whether the rune at one byte position begins a word in text.
+func isWordStart(text string, at int) bool {
+	if at <= 0 {
+		return true
+	}
+	previous, _ := utf8.DecodeLastRuneInString(text[:at])
+	return !unicode.IsLetter(previous) && !unicode.IsDigit(previous)
+}
+
+// groupMatchScore is how well one group answers a query: the best score of its header and its
+// sessions' rows.  A group with no match at all scores above every match, so it sorts last.
+func groupMatchScore(query string, g group) int {
+	best := -1
+	for _, s := range g.Sessions {
+		if score := rowMatchScore(query, s); score >= 0 && (best < 0 || score < best) {
+			best = score
+		}
+	}
+	header := session{Project: g.Project, CWD: g.CWD, Server: g.Server}
+	if score := rowMatchScore(query, header); score >= 0 && (best < 0 || score < best) {
+		best = score
+	}
+	if best < 0 {
+		return 1 << 30
+	}
+	return best
+}
+
+// rowMatchScore ranks one query against one row: the worst best-term of its terms, or -1 when
+// any term does not match.  It is the ranking form of matchesRow, scoped terms included.
+func rowMatchScore(query string, s session) int {
+	fields := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
+		"zmx": s.ZmxName, "cmd": s.Command, "server": s.Server}
+	best := 0
+	for _, term := range strings.Fields(query) {
+		scope, value := scopedTerm(term)
+		if value == "" {
+			continue
+		}
+		termBest := -1
+		for field, text := range fields {
+			if scope != "" && scope != field {
+				continue
+			}
+			if score := matchScore(value, text); score >= 0 && (termBest < 0 || score < termBest) {
+				termBest = score
+			}
+		}
+		if termBest < 0 {
+			return -1
+		}
+		if termBest > best {
+			best = termBest
+		}
+	}
+	return best
+}
+
+// scopedTerm splits one query term into the field it restricts itself to, if any: `@` names
+// the project, `#` the session name, `~` the path, and `host:` the host.  A bare term is not
+// restricted, and an empty scope means every field.
+func scopedTerm(term string) (field, value string) {
+	switch {
+	case strings.HasPrefix(term, "@"):
+		return "project", strings.TrimPrefix(term, "@")
+	case strings.HasPrefix(term, "#"):
+		return "name", strings.TrimPrefix(term, "#")
+	case strings.HasPrefix(term, "~"):
+		return "cwd", strings.TrimPrefix(term, "~")
+	case strings.HasPrefix(term, "host:"):
+		return "server", strings.TrimPrefix(term, "host:")
+	}
+	return "", term
+}
+
 // matchesRow applies every whitespace-separated term to the fields a reader would search:
 // the name, the project, the directory, the host the row runs on, and, for a zmx session, the
-// handle zmx knows and the command it runs.  A term may land in any of them.
+// handle zmx knows and the command it runs.  A term may land in any of them, unless a prefix
+// restricts it to one.
 func matchesRow(query string, s session) (bool, map[string][]int) {
 	fields := map[string]string{"name": s.Name, "project": s.Project, "cwd": s.CWD,
 		"zmx": s.ZmxName, "cmd": s.Command, "server": s.Server}
+	order := []string{"name", "project", "cwd", "zmx", "cmd", "server"}
 	marks := map[string][]int{}
 	for _, term := range strings.Fields(query) {
+		scope, value := scopedTerm(term)
+		if value == "" {
+			continue
+		}
 		hit := false
-		for _, field := range []string{"name", "project", "cwd", "zmx", "cmd", "server"} {
-			if ok, idx := matchCell(term, fields[field]); ok {
+		for _, field := range order {
+			if scope != "" && scope != field {
+				continue
+			}
+			if ok, idx := matchCell(value, fields[field]); ok {
 				hit = true
 				if len(idx) > 0 {
 					marks[field] = idx
