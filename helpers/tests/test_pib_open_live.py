@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -342,9 +343,12 @@ class ZmxSessionsTest(unittest.TestCase):
     def test_the_shell_snippet_runs_the_command_in_bash_when_the_host_has_no_zsh(self):
         # The snippet is plain sh, so a host that has neither zsh nor bash still runs the
         # command, and the same snippet can be checked here against a host that has both.
-        with patch.object(pib_open, 'REMOTE_SHELLS', ('/bin/zsh', '/bin/bash')):
-            in_zsh = self.run_snippet("printf 'shell=%s\\n' \"$0\"")
-        self.assertEqual(in_zsh, 'shell=/bin/zsh\n')
+        # zsh is only checked where it exists, because a Linux CI runner has no /bin/zsh
+        # and the first case would then say nothing about the snippet.
+        if pathlib.Path('/bin/zsh').exists():
+            with patch.object(pib_open, 'REMOTE_SHELLS', ('/bin/zsh', '/bin/bash')):
+                in_zsh = self.run_snippet("printf 'shell=%s\\n' \"$0\"")
+            self.assertEqual(in_zsh, 'shell=/bin/zsh\n')
         with patch.object(pib_open, 'REMOTE_SHELLS', ('/bin/no-such-zsh', '/bin/bash')):
             in_bash = self.run_snippet("printf 'shell=%s\\n' \"$0\"")
         self.assertEqual(in_bash, 'shell=/bin/bash\n')
@@ -423,29 +427,37 @@ class ZmxSessionsTest(unittest.TestCase):
         # The check is one `ssh -O check`; the master itself is started with Popen, because
         # its stderr is relayed line by line while a YubiKey touch is waited for.  Both are
         # mocked here: a real ssh would try to resolve the host and turn a unit test into a
-        # network test.
+        # network test.  HOME is a temporary directory that holds an agent socket, so the
+        # test says the same thing on every machine instead of reading the one it runs on.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = pathlib.Path(tmp.name)
+        (home / '.ssh').mkdir()
+        (home / '.ssh' / 'agent.sock').touch()
         dead = pib_open.subprocess.CompletedProcess(['ssh'], 255, b'', b'')
-        with patch.object(pib_open.subprocess, 'run', return_value=dead) as run, \
-             patch.object(pib_open.subprocess, 'Popen') as popen:
-            popen.return_value.stderr = io.StringIO('')
-            popen.return_value.wait.return_value = 0
-            self.assertEqual(pib_open.zmx_connect('build-host'), 0)
-        command = popen.call_args_list[0].args[0]
-        self.assertIn('-M', command)
-        self.assertIn('-N', command)
-        self.assertIn('-f', command)
-        self.assertIn('ControlPersist=12h', command)
-        self.assertIn('PreferredAuthentications=publickey', command)
-        self.assertIn('PasswordAuthentication=no', command)
-        self.assertIn('KbdInteractiveAuthentication=no', command)
-        self.assertIn('BatchMode=no', command)
-        self.assertEqual(command[0], pib_open.ssh_binary())
-        self.assertEqual(popen.call_args.kwargs['env']['SSH_AUTH_SOCK'],
-                         str(pathlib.Path.home() / '.ssh' / 'agent.sock'))
-        self.assertEqual(command[-1], 'build-host')
-        self.assertEqual(run.call_args.args[0],
-                         [pib_open.ssh_binary(), '-S', pib_open.ssh_control_path(),
-                          '-O', 'check', 'build-host'])
+        with patch.dict(os.environ, {'HOME': str(home)}):
+            control_path = pib_open.ssh_control_path()
+            with patch.object(pib_open.subprocess, 'run', return_value=dead) as run, \
+                 patch.object(pib_open.subprocess, 'Popen') as popen:
+                popen.return_value.stderr = io.StringIO('')
+                popen.return_value.wait.return_value = 0
+                self.assertEqual(pib_open.zmx_connect('build-host'), 0)
+            command = popen.call_args_list[0].args[0]
+            self.assertIn('-M', command)
+            self.assertIn('-N', command)
+            self.assertIn('-f', command)
+            self.assertIn('ControlPersist=12h', command)
+            self.assertIn('PreferredAuthentications=publickey', command)
+            self.assertIn('PasswordAuthentication=no', command)
+            self.assertIn('KbdInteractiveAuthentication=no', command)
+            self.assertIn('BatchMode=no', command)
+            self.assertEqual(command[0], pib_open.ssh_binary())
+            self.assertEqual(popen.call_args.kwargs['env']['SSH_AUTH_SOCK'],
+                             str(home / '.ssh' / 'agent.sock'))
+            self.assertEqual(command[-1], 'build-host')
+            self.assertEqual(run.call_args.args[0],
+                             [pib_open.ssh_binary(), '-S', control_path,
+                              '-O', 'check', 'build-host'])
 
     def test_remote_zmx_discovery_prefers_configured_binary_then_mise_shim(self):
         with patch.object(pib_open, 'CONFIG', self.config):
