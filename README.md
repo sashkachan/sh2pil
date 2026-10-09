@@ -98,8 +98,8 @@ header or on the row rather than failing the read.
 | **ssh** | remote targets | A master on `~/.ssh/agent.sock` is reused, and is shared with plain `ssh` when `ssh_config` points `ControlPath` at it. |
 | **kitty** | the overlay bindings | `kitten`, which ships with kitty, does the window lookup and remote control. |
 | **tmux** | the fallback terminal | Used when kitty cannot be reached, and for panes inside it. |
-| **nvim** | the transcript and editor actions | `$EDITOR` wins over it. |
-| **lazygit**, **yazi** | two travel actions | Absent tools are reported and skipped. |
+| **nvim** | the transcript and editor actions | The `tools.editor` setting or `$EDITOR` replaces it. |
+| **lazygit**, **yazi** | two travel actions | The `tools.file_browser` and `tools.git_tool` settings replace them; absent tools are reported and skipped. |
 | **mise** | *not required* | Only one more place to find `zmx`: `~/.local/share/mise/shims/zmx` is tried after `PATH`, locally and on a remote host. `zmx_remote_binary` can name it explicitly. |
 
 macOS needs nothing extra for the picker itself: `defaults` reads the system appearance so the
@@ -136,6 +136,11 @@ sh2pil --print-config     # print the effective settings only
 
 `--config <file>`, or `SH2PIL_CONFIG`, reads a different main file. `SH2PIL_PYTHON` selects the
 interpreter the helpers run under.
+
+The `tools:` section names the commands this machine runs, and `tools.hosts.<destination>`
+overrides one of them for one host, in the spelling `zmx_servers` uses. A remote row runs the
+host's own tool: with no per-host entry, the command set here does not travel, and the host's
+default is used instead. See `config.example.yaml` for the shape.
 
 ## Terminal integration
 

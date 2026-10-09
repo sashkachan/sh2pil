@@ -21,6 +21,19 @@ func writeConfig(t *testing.T, body string) {
 	}
 }
 
+// writeConfigOverlay puts one config.d overlay in the home the test is already using, so a
+// case can prove that a later file wins over the main one.
+func writeConfigOverlay(t *testing.T, name, body string) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("HOME"), ".config", "sh2pil", "config.d", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadCloseOnNavigate(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if got := readCloseOnNavigate(); got != defaultCloseOnNavigate {

@@ -133,16 +133,18 @@ func TestRemoteProjectGroupStartsANewChatThere(t *testing.T) {
 	if _, cmd := chat.startAction("ctrl+a"); cmd == nil {
 		t.Fatal("ctrl+a on a remote project did not start a new chat there")
 	}
-	// The host's directory is what these keys need, and a project row names one.
-	for _, tool := range []struct{ key, action string }{{"ctrl+g", "lazygit"},
-		{"alt+f", "yazi"}} {
+	// The host's directory is what these keys need, and a project row names one.  No
+	// per-host tool is set here, so the picker sends the kind and the host picks.
+	for _, tool := range []struct{ key, action, kind string }{{"ctrl+g", "lazygit", "git_tool"},
+		{"alt+f", "yazi", "file_browser"}} {
 		fresh := build()
 		if _, cmd := fresh.startAction(tool.key); cmd == nil {
 			t.Errorf("%s on a remote project = cmd %v, want the tool opened there",
 				tool.key, cmd)
 		}
 		args, _ := fresh.openArgs(tool.action, project, false)
-		want := []string{"tool-remote", "build-host", "/srv/api", tool.action, "--place", "tab"}
+		want := []string{"tool-remote", "build-host", "/srv/api", "--kind", tool.kind,
+			"--place", "tab"}
 		if !reflect.DeepEqual(args, want) {
 			t.Errorf("%s args = %#v, want %#v", tool.key, args, want)
 		}

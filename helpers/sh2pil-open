@@ -43,8 +43,8 @@ Usage:
             [--zmx] [--yes] [--json]
             [--fork] [--name TITLE] [--label LABEL] [--place WHERE] [--emit-cmd]
     sh2pil-open session-remote-copy <ssh-destination> <session> [--harness STORE] [--cwd DIR]
-    sh2pil-open tool-remote <ssh-destination> <cwd> <lazygit|yazi> [--label LABEL]
-            [--place WHERE] [--emit-cmd]
+    sh2pil-open tool-remote <ssh-destination> <cwd> [<tool>] [--kind file_browser|git_tool]
+            [--label LABEL] [--place WHERE] [--emit-cmd]
     sh2pil-open shell-remote <ssh-destination> <cwd> [--label LABEL] [--place WHERE]
             [--emit-cmd]
     sh2pil-open editor-remote <ssh-destination> <cwd> [--editor NAME] [--label LABEL]
@@ -173,13 +173,15 @@ remote action opens a new terminal, and the remote pi titles it over the SSH pty
 `session-remote-delete` removes a transcript on the host itself, because the store is the
 host's and its own sh2pil-sessions is what resolves the id there; the rest of the remote store is left
 alone, so renaming and editing a remote transcript stay with the host.
-`tool-remote` runs one directory tool on the host for the same reason: yazi and lazygit act
-on the files they show, and a host's files are on that host.  lazygit is given the project
-directory and finds the repository that holds it itself, because a path this machine cannot
-see cannot be resolved here.  The host is asked once, before a terminal is opened, whether
-the directory is there and the tool is installed, because a terminal closes at once when the
-tool inside it cannot start; a host that cannot be reached is not refused by that question,
-and its own terminal carries the reason.
+`tool-remote` runs one directory tool on the host for the same reason: a file browser and a
+Git tool act on the files they show, and a host's files are on that host.  The tool is the
+host's own: the picker sends a name only when the reader set one for that host under
+`tools.hosts`, and otherwise sends the kind and the host's default is used.  A Git tool is
+given the project directory and finds the repository that holds it itself, because a path
+this machine cannot see cannot be resolved here.  The host is asked once, before a terminal
+is opened, whether the directory is there and the tool is installed, because a terminal
+closes at once when the tool inside it cannot start; a host that cannot be reached is not
+refused by that question, and its own terminal carries the reason.
 `shell-remote` opens the host's own login shell in the host's own directory, interactive and
 with no command, which is what a shell opened here is.  Only the directory is checked, and
 no zmx session is made for it: only a chat is worth keeping alive across terminals, and a
@@ -702,11 +704,15 @@ def zmx_sessions() -> list[dict]:
 
 
 def config_entries() -> list[tuple[str, str]]:
-    """Return every key and value of the shared config, in file order.
+    """Return every top-level key and value of the shared config, in file order.
 
     The file is shared: the Go picker reads the keys it owns, this helper reads its own, and
     each ignores the rest, so one setting means one thing in one place.  A comment runs to the
     end of the line, and a later line of the same key overrides an earlier one.
+
+    The picker also reads a nested `tools:` section.  Its lines are indented, and an indented
+    line belongs to a section rather than to the top level, so it is skipped: a nested
+    `file_browser` must not read as the flat key of the same name.
     """
     try:
         lines = CONFIG.read_text(encoding='utf-8').splitlines()
@@ -714,6 +720,8 @@ def config_entries() -> list[tuple[str, str]]:
         return []
     entries: list[tuple[str, str]] = []
     for line in lines:
+        if line[:1] in (' ', '\t'):
+            continue
         name, separator, raw = line.split('#', 1)[0].strip().partition(':')
         if separator:
             entries.append((name.strip(), raw.strip()))
@@ -1483,10 +1491,11 @@ MISSING_EDITOR_MARKER = 'sh2pil-no-editor'
 # otherwise.  The host's login shell expands this, so the fallback has to reach it as written.
 HOST_EDITOR = '${EDITOR:-nvim}'
 
-# The directory tools the picker runs on a row's own host.  A chat opens where its transcript
-# is, and a directory tool opens where its files are: yazi browses them and lazygit works on
-# them, so the host that holds them is the machine that runs the tool.
-REMOTE_TOOLS = ('lazygit', 'yazi')
+# The tool a host runs for one kind when the caller names none.  The picker sends only the
+# kind for a row whose host has no per-host setting, so the name in force is the host's own
+# default and this machine's configured tool never travels.  A reader who wants a specific
+# command on one host sets tools.hosts.<destination>.<kind>, and that name is sent instead.
+REMOTE_TOOL_DEFAULTS = {'file_browser': 'yazi', 'git_tool': 'lazygit'}
 
 # A tool name that may travel to a host.  The name is quoted into a login shell there, so a
 # metacharacter would be a way to run something else; this keeps the name a name.
@@ -1543,14 +1552,24 @@ def remote_tool_problem(server: str, cwd: str, tool: str) -> str:
     return ''
 
 
-def tool_remote(server: str, cwd: str, tool: str, label: str = '', place: str = 'tab',
-                emit: bool = False) -> int:
+def tool_remote(server: str, cwd: str, tool: str = '', label: str = '', place: str = 'tab',
+                emit: bool = False, kind: str = '') -> int:
     """Open a terminal that runs one directory tool on a host, in the host's directory.
+
+    The tool is named by the caller, or chosen from REMOTE_TOOL_DEFAULTS by kind when the
+    reader set no per-host value for that host.  A kind and a tool together are accepted:
+    the tool wins, because it is the more specific answer.
 
     An empty directory is not a mistake: it is what the picker sends for a session whose
     recorded directory the host has already reported as gone, and the tool then starts in
     that host's home directory, as a chat does.
     """
+    if not tool:
+        if not kind:
+            return fail('sh2pil-open: tool-remote needs a tool name or --kind')
+        tool = REMOTE_TOOL_DEFAULTS.get(kind, '')
+        if not tool:
+            return fail(f'sh2pil-open: {kind} is not a directory-tool kind')
     if not valid_ssh_destination(server):
         return fail('sh2pil-open: server must be an SSH config alias or user@host')
     if not TOOL_NAME.fullmatch(tool):
@@ -3228,7 +3247,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remote_tooling.add_argument('server', help='SSH config alias or user@host')
     remote_tooling.add_argument('cwd', help="absolute project directory on the server; an "
                                                "empty string starts in the host's home")
-    remote_tooling.add_argument('tool', help='the tool to run there')
+    remote_tooling.add_argument('tool', nargs='?', default='',
+                                help='the tool to run there; omit it and name a --kind instead')
+    remote_tooling.add_argument('--kind', default='',
+                                choices=sorted(REMOTE_TOOL_DEFAULTS),
+                                help='use the host default for this kind when no tool is named')
     remote_tooling.add_argument('--label', default='',
                                 help='tab and window title; without one the tool and the '
                                      'directory name it')
@@ -3531,7 +3554,7 @@ def main(argv: list[str]) -> int:
 
     if args.action == 'tool-remote':
         return tool_remote(args.server, args.cwd, args.tool, args.label, args.place,
-                           args.emit_cmd)
+                           args.emit_cmd, args.kind)
 
     if args.action == 'shell-remote':
         return shell_remote(args.server, args.cwd, args.label, args.place, args.emit_cmd)

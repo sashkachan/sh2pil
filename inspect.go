@@ -30,6 +30,25 @@ func printConfiguration(out io.Writer, cfg Config) {
 	fmt.Fprintln(out, "file_browser: "+cfg.FileBrowser)
 	fmt.Fprintln(out, "git_tool: "+cfg.GitTool)
 	fmt.Fprintln(out, "shell: "+cfg.Shell)
+	if len(cfg.ToolHosts) > 0 {
+		hosts := make([]string, 0, len(cfg.ToolHosts))
+		for host := range cfg.ToolHosts {
+			hosts = append(hosts, host)
+		}
+		sort.Strings(hosts)
+		for _, host := range hosts {
+			keys := make([]string, 0, len(cfg.ToolHosts[host]))
+			for key := range cfg.ToolHosts[host] {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			pairs := make([]string, 0, len(keys))
+			for _, key := range keys {
+				pairs = append(pairs, key+"="+cfg.ToolHosts[host][key])
+			}
+			fmt.Fprintln(out, "tools.hosts."+host+": "+strings.Join(pairs, ", "))
+		}
+	}
 	if len(cfg.Values) == 0 {
 		return
 	}

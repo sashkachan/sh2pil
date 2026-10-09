@@ -1191,6 +1191,40 @@ class RemoteToolTest(unittest.TestCase):
         self.assertIn('|| echo sh2pil-no-tool', asked[0])
         self.assertIn("test -d /srv/api", asked[0])
 
+    def test_a_kind_uses_the_hosts_default_when_no_tool_is_named(self):
+        with patch.object(sh2pil_open, 'launch', return_value=0) as launch, \
+             self.problem(''):
+            self.assertEqual(
+                sh2pil_open.tool_remote('build-host', '/srv/api', kind='file_browser'), 0)
+        self.assertIn('-lic yazi', launch.call_args.args[0][7])
+        self.assertEqual(launch.call_args.args[2], 'yazi api')
+        with patch.object(sh2pil_open, 'launch', return_value=0) as launch, \
+             self.problem(''):
+            self.assertEqual(
+                sh2pil_open.tool_remote('build-host', '/srv/api', kind='git_tool'), 0)
+        self.assertIn('-lic lazygit', launch.call_args.args[0][7])
+
+    def test_a_named_tool_wins_over_the_kind(self):
+        with patch.object(sh2pil_open, 'launch', return_value=0) as launch, \
+             self.problem(''):
+            self.assertEqual(
+                sh2pil_open.tool_remote('build-host', '/srv/api', 'lf', kind='file_browser'), 0)
+        self.assertIn('-lic lf', launch.call_args.args[0][7])
+
+    def test_neither_a_tool_nor_a_kind_is_refused(self):
+        errors = io.StringIO()
+        with patch.object(sh2pil_open, 'launch') as launch, \
+             contextlib.redirect_stderr(errors):
+            self.assertEqual(sh2pil_open.tool_remote('build-host', '/srv/api'), 1)
+        self.assertIn('needs a tool name or --kind', errors.getvalue())
+        launch.assert_not_called()
+        with patch.object(sh2pil_open, 'launch') as launch, \
+             contextlib.redirect_stderr(errors):
+            self.assertEqual(
+                sh2pil_open.tool_remote('build-host', '/srv/api', kind='browser'), 1)
+        self.assertIn('is not a directory-tool kind', errors.getvalue())
+        launch.assert_not_called()
+
     def test_an_emitted_command_offers_a_destination_or_a_tool_name_it_must_not_run(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -1383,6 +1417,46 @@ class HostEnvTest(unittest.TestCase):
              patch.object(sh2pil_open.subprocess, 'run', return_value=completed) as run:
             sh2pil_open.zmx_remote_projects('build-host')
         self.assertNotIn('export', run.call_args.args[0][-1])
+
+
+class ConfigEntriesTest(unittest.TestCase):
+    """The shared config is read by the picker and the helper, and the picker's nested
+    `tools:` section must not read as a top-level setting here."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = pathlib.Path(self.tmp.name) / 'config.yaml'
+
+    @contextlib.contextmanager
+    def configured(self, text):
+        self.config.write_text(text)
+        with patch.object(sh2pil_open, 'CONFIG', self.config):
+            yield
+
+    def test_a_nested_line_is_not_a_top_level_entry(self):
+        text = ('zmx_servers: build-host # the builder\n'
+                'tools:\n'
+                '  file_browser: yazi\n'
+                '  hosts:\n'
+                '    build-host:\n'
+                '      file_browser: lf\n')
+        with self.configured(text):
+            entries = sh2pil_open.config_entries()
+        # `tools:` is a top-level line that opens a section; the helpers do not read it, and
+        # nothing under it may read as a setting of its own.
+        self.assertEqual(entries, [('zmx_servers', 'build-host'), ('tools', '')])
+        self.assertEqual(sh2pil_open.config_value('file_browser'), '')
+
+    def test_flat_keys_and_ssh_env_still_read(self):
+        text = ('zmx_servers: build-host\n'
+                'file_browser: ranger\n'
+                'ssh_env: TERM=xterm-256color\n'
+                'ssh_env.build-host: LANG=C.UTF-8\n')
+        with self.configured(text):
+            self.assertEqual(sh2pil_open.config_value('file_browser'), 'ranger')
+            self.assertEqual(sh2pil_open.remote_env('build-host'),
+                             [('TERM', 'xterm-256color'), ('LANG', 'C.UTF-8')])
 
 
 class RemoteEditorTest(unittest.TestCase):

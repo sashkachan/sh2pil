@@ -186,21 +186,24 @@ func TestRemoteSessionRowRefusesTheLocalOnlyKeys(t *testing.T) {
 	}
 }
 
-// A directory tool opens where its files are.  yazi browses the files a host holds and lazygit
-// works on them, so on a row of another host both run there, in that host's own directory, and
-// the picker resolves nothing about that path: it cannot see it.  A directory the host has
-// reported as gone is refused by name instead of opening the host's home directory by surprise.
+// A directory tool opens where its files are.  A file browser browses the files a host
+// holds and a git tool works on them, so on a row of another host both run there, in that
+// host's own directory, and the picker resolves nothing about that path: it cannot see it.
+// The tool is the host's own too: without a per-host setting the picker sends the kind, and
+// the host's default runs; a per-host setting names the command that travels.  A directory
+// the host has reported as gone is refused by name instead of opening the host's home
+// directory by surprise.
 func TestRemoteDirectoryToolsRunOnTheirOwnHost(t *testing.T) {
 	row := remoteRow()
 	m := model{view: viewSessions, layout: "tab", harness: "pi", width: 120, height: 20,
 		sessions: []session{row}}
 	for _, test := range []struct {
 		key  string
-		tool string
-	}{{"lazygit", "lazygit"},
-		{"yazi", "yazi"}} {
+		kind string
+	}{{"lazygit", "git_tool"},
+		{"yazi", "file_browser"}} {
 		args, note := m.openArgs(test.key, row, false)
-		want := []string{"tool-remote", row.Server, row.CWD, test.tool, "--place", "tab"}
+		want := []string{"tool-remote", row.Server, row.CWD, "--kind", test.kind, "--place", "tab"}
 		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 			t.Errorf("%s args = %#v, want %#v", test.key, args, want)
 		}
@@ -208,11 +211,28 @@ func TestRemoteDirectoryToolsRunOnTheirOwnHost(t *testing.T) {
 			t.Errorf("%s note = %q, want the tool, its directory, and the host", test.key, note)
 		}
 	}
+	// A host the reader configured runs the command that host's setting names, and this
+	// machine's own tool still never travels.
+	configured := m
+	configured.toolHosts = map[string]map[string]string{
+		row.Server: {"file_browser": "lf", "git_tool": "tig"},
+	}
+	for _, test := range []struct{ key, tool string }{{"lazygit", "tig"}, {"yazi", "lf"}} {
+		args, note := configured.openArgs(test.key, row, false)
+		want := []string{"tool-remote", row.Server, row.CWD, test.tool, "--place", "tab"}
+		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+			t.Errorf("%s configured args = %#v, want %#v", test.key, args, want)
+		}
+		if !strings.Contains(note, test.tool) {
+			t.Errorf("%s configured note = %q, want the configured tool", test.key, note)
+		}
+	}
 	// A project row names a directory on the host, so the same keys open there.
 	project := session{Project: "api", CWD: "/srv/api", Alive: true,
 		ProjectOnly: true, Server: "build-host"}
 	args, _ := m.openArgs("yazi", project, false)
-	want := []string{"tool-remote", "build-host", "/srv/api", "yazi", "--place", "tab"}
+	want := []string{"tool-remote", "build-host", "/srv/api", "--kind", "file_browser",
+		"--place", "tab"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("remote project yazi args = %#v, want %#v", args, want)
 	}
@@ -292,6 +312,14 @@ func TestRemoteProjectEditorOpensOnItsOwnHost(t *testing.T) {
 	}
 	if !strings.Contains(note, row.Server) {
 		t.Fatalf("remote editor note = %q, want the host named", note)
+	}
+	// A per-host editor setting is the reader's explicit choice, and only that name travels.
+	tuned := m
+	tuned.toolHosts = map[string]map[string]string{row.Server: {"editor": "vim"}}
+	args, _ = tuned.openArgs("project-editor", row, false)
+	if strings.Join(args, "\x00") != strings.Join([]string{"editor-remote", row.Server,
+		row.CWD, "--editor", "vim", "--label", "nvim home-infra", "--place", "tab"}, "\x00") {
+		t.Fatalf("configured remote editor args = %#v, want the per-host editor", args)
 	}
 	// The title the modal collected is the one the window gets.
 	named := m

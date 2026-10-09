@@ -92,13 +92,31 @@ ssh_env: TERM=xterm-256color
 # settings.
 
 # ---- tools ----
-# The directory tools this machine runs.  file_browser and git_tool name the command the alt+f
-# and ctrl+g actions run; the tool's own arguments may follow the name.  editor is the program
-# the transcript and project actions open; the -nvim flag wins over it, and $EDITOR is the next
-# fallback.  A remote row runs the tool the host's own config names.
-# file_browser: yazi
-# git_tool: lazygit
-# editor: nvim
+# The directory tools this machine runs, nested under `tools:`.  file_browser and git_tool
+# name the command the alt+f and ctrl+g actions run; the tool's own arguments may follow the
+# name.  editor is the program the transcript and project actions open; the -nvim flag wins
+# over it, and $EDITOR is the next fallback.  shell is read and shown by --print-config; the
+# shell a new terminal runs is resolved from $SHELL here and from the host's own login shell
+# on a host.
+#
+# `tools.hosts.<destination>` overrides one tool for one host, spelled exactly as zmx_servers
+# spells that host.  A remote row runs the host's own tool: with no per-host entry the picker
+# sends only the kind (file browser or git tool) and the host's default runs, so the tool this
+# machine is configured with never travels.  An editor entry does travel; without one the host
+# uses its own $EDITOR, and nvim when it has neither.
+#
+# The flat keys editor, file_browser, git_tool, and shell still work; the last value in the
+# chain wins whichever form carries it.
+#
+# tools:
+#   editor: nvim
+#   file_browser: yazi
+#   git_tool: lazygit
+#   hosts:
+#     example-host:
+#       file_browser: lf
+#       git_tool: tig
+#       editor: vim
 
 # ---- how actions are reached ----
 # keybind runs the primary key directly, prompt opens a numbered next-step menu on it, and both

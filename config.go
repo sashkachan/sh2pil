@@ -24,6 +24,21 @@ const (
 	defaultGitTool     = "lazygit"
 )
 
+// toolNames are the settings the nested tools section holds, in the order inspection names
+// them.  A flat key of the same name is the older spelling of tools.<name>, and the last
+// value in the chain wins whichever spelling carries it.
+var toolNames = []string{"editor", "file_browser", "git_tool", "shell"}
+
+// isToolName reports whether a key names one of the directory tools.
+func isToolName(name string) bool {
+	for _, known := range toolNames {
+		if name == known {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultMode is how the primary keys act: keybind runs the action directly, prompt opens the
 // next-step menu, and both keeps the keys and offers the menu on its own key.
 const defaultMode = "keybind"
@@ -130,11 +145,17 @@ type Config struct {
 	AttentionSort   bool    // lift the rows that wait on a person above the rest of their group
 	Notify          string  // off, bell, or terminal: how a chat that starts waiting is announced
 	ZmxServers      []string
-	// The directory tools this machine runs, from editor, file_browser, git_tool, and shell.
+	// The directory tools this machine runs: the effective global values.  A per-host
+	// value lives in ToolHosts and travels with a remote action; the global value never
+	// does.
 	Editor      string
 	FileBrowser string
 	GitTool     string
 	Shell       string
+	// ToolHosts holds the tools one host runs, from tools.hosts.<destination>.<key>.  A
+	// host with no entry there keeps its own default, so the picker sends a tool name to
+	// a host only when this map names one for it.
+	ToolHosts map[string]map[string]string
 	// Mode and Triggers decide how an action is reached: by its key, from the next-step menu,
 	// or both.  A trigger names one action and overrides the mode for that action.
 	Mode      string
@@ -159,9 +180,10 @@ var knownConfigKeys = map[string]bool{
 }
 
 // knownConfigPrefixes are the keys a program owns as a family rather than one setting: the
-// picker owns key.<context>.<action> and trigger.<action>, and the helper owns one
-// environment set per host under ssh_env.<destination>.
-var knownConfigPrefixes = []string{"key.", "trigger.", "ssh_env."}
+// picker owns key.<context>.<action>, trigger.<action>, and the dotted tools.<name> names of
+// the nested tools section, and the helper owns one environment set per host under
+// ssh_env.<destination>.
+var knownConfigPrefixes = []string{"key.", "trigger.", "ssh_env.", "tools."}
 
 // loadConfig reads every file in the chain and builds the effective configuration.
 func loadConfig() Config {
@@ -176,7 +198,11 @@ func loadConfig() Config {
 		Keys:            map[string]string{},
 		Triggers:        map[string]string{},
 		Values:          map[string]string{},
+		ToolHosts:       map[string]map[string]string{},
 	}
+	// tools collects the effective global tool in chain order, so the last value wins
+	// whichever form carries it: tools.<key> or a flat <key>.
+	tools := map[string]string{}
 	for _, path := range configChain() {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -186,19 +212,7 @@ func loadConfig() Config {
 			continue
 		}
 		cfg.Sources = append(cfg.Sources, path)
-		for number, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-			if line == "" {
-				continue
-			}
-			name, raw, ok := strings.Cut(line, ":")
-			if !ok {
-				cfg.Warnings = append(cfg.Warnings,
-					fmt.Sprintf("%s:%d: not a key: value line", path, number+1))
-				continue
-			}
-			cfg.Values[strings.TrimSpace(name)] = strings.TrimSpace(raw)
-		}
+		scanConfigFile(path, string(data), cfg.Values, tools, cfg.ToolHosts, &cfg.Warnings)
 	}
 	cfg.Harnesses = parseHarnesses(cfg.Values["harnesses"])
 	if raw, ok := cfg.Values["default_view"]; ok && (raw == viewSessions || raw == viewZmx) {
@@ -248,16 +262,16 @@ func loadConfig() Config {
 	if raw, found := cfg.Values["zmx_servers"]; found {
 		cfg.ZmxServers = splitList(raw)
 	}
-	cfg.Editor = strings.TrimSpace(cfg.Values["editor"])
+	cfg.Editor = strings.TrimSpace(tools["editor"])
 	cfg.FileBrowser = defaultFileBrowser
-	if raw := strings.TrimSpace(cfg.Values["file_browser"]); raw != "" {
+	if raw := strings.TrimSpace(tools["file_browser"]); raw != "" {
 		cfg.FileBrowser = raw
 	}
 	cfg.GitTool = defaultGitTool
-	if raw := strings.TrimSpace(cfg.Values["git_tool"]); raw != "" {
+	if raw := strings.TrimSpace(tools["git_tool"]); raw != "" {
 		cfg.GitTool = raw
 	}
-	cfg.Shell = strings.TrimSpace(cfg.Values["shell"])
+	cfg.Shell = strings.TrimSpace(tools["shell"])
 	if raw := strings.TrimSpace(cfg.Values["mode"]); raw != "" {
 		if knownModes[raw] {
 			cfg.Mode = raw
@@ -304,6 +318,110 @@ func loadConfig() Config {
 	}
 	sort.Strings(cfg.Warnings)
 	return cfg
+}
+
+// scanConfigFile reads one file of the chain into the flat value map, the effective global
+// tools, and the per-host tools.  The file is a small subset of YAML, and the picker refuses
+// to guess at anything outside it: top-level `name: value` lines, one `tools:` section with
+// its four keys, and an optional `tools.hosts:` map of destination to the same four keys.
+// Values are scalars, `#` starts a comment, and blank lines are ignored.  Two spaces indent
+// each level; a tab or an odd indent is reported and the line is dropped.  The subset is
+// shared with the helper, which skips indented lines, so a nested line never reads as a
+// top-level setting.
+func scanConfigFile(path, text string, values, tools map[string]string,
+	hosts map[string]map[string]string, warnings *[]string) {
+	warn := func(number int, format string, args ...any) {
+		*warnings = append(*warnings,
+			fmt.Sprintf("%s:%d: %s", path, number+1, fmt.Sprintf(format, args...)))
+	}
+	// inTools and inHosts say which section the last line opened.  A shallower line closes
+	// the deeper one, so tools and hosts keep their YAML meaning whatever order they come
+	// in.
+	inTools, inHosts, host := false, false, ""
+	for number, rawLine := range strings.Split(text, "\n") {
+		line := strings.SplitN(rawLine, "#", 2)[0]
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		indent := len(line) - len(trimmed)
+		if strings.ContainsRune(line[:indent], '\t') {
+			warn(number, "a tab indents this line; use two spaces")
+			continue
+		}
+		if indent%2 != 0 || indent > 6 {
+			warn(number, "indent of %d spaces does not name a section; use two per level", indent)
+			continue
+		}
+		name, raw, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			warn(number, "not a key: value line")
+			continue
+		}
+		name, raw = strings.TrimSpace(name), strings.TrimSpace(raw)
+		switch indent {
+		case 0:
+			inTools, inHosts, host = false, false, ""
+			if name == "tools" {
+				if raw != "" {
+					warn(number, "tools must open a section, not hold a value; ignored")
+					continue
+				}
+				inTools = true
+				continue
+			}
+			values[name] = raw
+			if isToolName(name) {
+				tools[name] = raw
+			}
+		case 2:
+			if !inTools {
+				warn(number, "an indented line is not inside a section; ignored")
+				continue
+			}
+			if name == "hosts" {
+				if raw != "" {
+					warn(number, "tools.hosts must open a section, not hold a value; ignored")
+					continue
+				}
+				inHosts, host = true, ""
+				continue
+			}
+			// A tool line closes the hosts map: YAML reads the shallower indent as the end
+			// of the deeper section.
+			inHosts = false
+			if !isToolName(name) {
+				warn(number, "tools.%s: unknown tool, ignored", name)
+				continue
+			}
+			values["tools."+name] = raw
+			tools[name] = raw
+		case 4:
+			if !inTools || !inHosts {
+				warn(number, "a host line is not inside tools.hosts; ignored")
+				continue
+			}
+			if raw != "" {
+				warn(number, "tools.hosts.%s: a host opens a section, not a value; ignored", name)
+				continue
+			}
+			host = name
+		case 6:
+			if !inTools || !inHosts || host == "" {
+				warn(number, "a host's tool line needs the host line before it; ignored")
+				continue
+			}
+			if !isToolName(name) {
+				warn(number, "tools.hosts.%s.%s: unknown tool, ignored", host, name)
+				continue
+			}
+			if hosts[host] == nil {
+				hosts[host] = map[string]string{}
+			}
+			values["tools.hosts."+host+"."+name] = raw
+			hosts[host][name] = raw
+		}
+	}
 }
 
 // keyActionByName reports whether the registry knows an action.

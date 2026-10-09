@@ -65,19 +65,20 @@ const (
 
 type model struct {
 	helperDir       string
-	python          string            // the interpreter the sibling helpers run under
-	editor          string            // the editor the transcript and project actions open
-	fileBrowser     string            // the tool the alt+f action runs
-	gitTool         string            // the tool the ctrl+g action runs
-	mode            string            // keybind, prompt, or both: how the primary keys act
-	triggers        map[string]string // action -> key or prompt, from the trigger settings
-	toolChoices     []string          // the menu's actions: travel, or the command palette
-	toolSections    []string          // the section heading of each menu row, or "" for none
-	toolPos         int               // the highlighted menu row
-	agentChoices    []string          // the store menu a new chat from a window asks
-	agentPos        int               // the highlighted store row
-	harness         string            // the store a new chat uses
-	harnesses       []string          // the stores every target is read for
+	python          string                       // the interpreter the sibling helpers run under
+	editor          string                       // the editor the transcript and project actions open
+	fileBrowser     string                       // the tool the alt+f action runs
+	gitTool         string                       // the tool the ctrl+g action runs
+	toolHosts       map[string]map[string]string // per-host tools from tools.hosts
+	mode            string                       // keybind, prompt, or both: how the primary keys act
+	triggers        map[string]string            // action -> key or prompt, from the trigger settings
+	toolChoices     []string                     // the menu's actions: travel, or the command palette
+	toolSections    []string                     // the section heading of each menu row, or "" for none
+	toolPos         int                          // the highlighted menu row
+	agentChoices    []string                     // the store menu a new chat from a window asks
+	agentPos        int                          // the highlighted store row
+	harness         string                       // the store a new chat uses
+	harnesses       []string                     // the stores every target is read for
 	closeOnNavigate bool
 	// windowMenu marks the cmd+. dialog: the picker was started for one window that
 	// sh2pil-open already resolved, so its menu opens at once, every action asks where it
@@ -276,7 +277,7 @@ func main() {
 		harnesses = menuHarnesses(settings.Harnesses, *menuStores)
 	}
 	app := &model{helperDir: dir, python: resolvePython3(), editor: chosen, fileBrowser: settings.FileBrowser,
-		gitTool: settings.GitTool, mode: settings.Mode, triggers: settings.Triggers,
+		gitTool: settings.GitTool, toolHosts: settings.ToolHosts, mode: settings.Mode, triggers: settings.Triggers,
 		harness:   chosenHarness,
 		harnesses: harnesses, closeOnNavigate: settings.CloseOnNavigate, view: viewSessions,
 		windowMenu: *menu, alwaysAsk: *menu, windowRow: windowMenuRow(*menuCWD, *menuServer),
@@ -2438,9 +2439,10 @@ func (m *model) remoteShellArgs(s session, place string) ([]string, string) {
 }
 
 // remoteEditorArgs is what sh2pil-open needs to open one project on another host in that host's
-// own editor.  No editor is named: the host's `$EDITOR` is used there, and nvim when it has
-// neither, because an editor is that machine's tool.  The label is the title the reader gave
-// the window, or the same default a local project editor is offered.
+// own editor.  The host's `$EDITOR` is the default, and nvim when it has neither; a per-host
+// setting under tools.hosts names one when the reader wants a specific editor there, and only
+// then does a name travel.  The label is the title the reader gave the window, or the same
+// default a local project editor is offered.
 func (m *model) remoteEditorArgs(s session, place string) ([]string, string) {
 	cwd := s.CWD
 	if !s.Alive {
@@ -2450,15 +2452,22 @@ func (m *model) remoteEditorArgs(s session, place string) ([]string, string) {
 	if label == "" {
 		label = defaultEditorTitle(s)
 	}
-	return []string{"editor-remote", s.Server, cwd, "--label", label, "--place", place},
-		"opened the project in the editor on " + s.Server
+	args := []string{"editor-remote", s.Server, cwd}
+	if editor := m.hostTool(s.Server, "editor"); editor != "" {
+		args = append(args, "--editor", editor)
+	}
+	args = append(args, "--label", label, "--place", place)
+	return args, "opened the project in the editor on " + s.Server
 }
 
 // remoteToolArgs is what sh2pil-open needs to run one directory tool on another host.  The
-// directory is the one that host recorded, and an empty one is a directory the host has
-// reported as gone: the tool then starts in that host's home directory, which is what an empty
-// directory means to the helper.  The label is left to sh2pil-open, which names the tool and the
-// directory it opens in, the same way the local verbs are named.
+// tool is the host's own: the reader's per-host setting names one when they want a specific
+// command there, and otherwise the helper chooses the host's default, so the tool this
+// machine is configured with never travels.  The directory is the one that host recorded, and
+// an empty one is a directory the host has reported as gone: the tool then starts in that
+// host's home directory, which is what an empty directory means to the helper.  The label is
+// left to sh2pil-open, which names the tool and the directory it opens in, the same way the
+// local verbs are named.
 // runToolArgs is the command that runs a configured directory tool in a terminal.  The tool
 // is a setting, so jj or another file browser works without a code change; the first word is
 // the command and the rest are its arguments.
@@ -2487,9 +2496,9 @@ func firstField(value, fallback string) string {
 }
 
 func (m *model) remoteToolArgs(action string, s session, place string) ([]string, string) {
-	tool := firstField(m.fileBrowser, defaultFileBrowser)
+	kind, description := "file_browser", "the file browser"
 	if action == "lazygit" {
-		tool = firstField(m.gitTool, defaultGitTool)
+		kind, description = "git_tool", "the git tool"
 	}
 	cwd := s.CWD
 	if !s.Alive {
@@ -2499,8 +2508,25 @@ func (m *model) remoteToolArgs(action string, s session, place string) ([]string
 	if project == "" || project == "." {
 		project = s.Project
 	}
-	return []string{"tool-remote", s.Server, cwd, tool, "--place", place},
-		"opened " + tool + " in " + project + " on " + s.Server
+	args := []string{"tool-remote", s.Server, cwd}
+	tool := m.hostTool(s.Server, kind)
+	if tool != "" {
+		args = append(args, tool)
+		description = tool
+	} else {
+		args = append(args, "--kind", kind)
+	}
+	args = append(args, "--place", place)
+	return args, "opened " + description + " in " + project + " on " + s.Server
+}
+
+// hostTool returns the tool the reader set for one host, or "" when the host keeps its own
+// default.  The kind is a tools key: editor, file_browser, or git_tool.
+func (m *model) hostTool(host, kind string) string {
+	if host == "" || m.toolHosts == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.toolHosts[host][kind])
 }
 
 func actionName(key string) string {
