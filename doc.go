@@ -132,14 +132,18 @@
 // Cmd+. asks the travel question without opening the picker first: it draws that same menu for
 // the window the reader is in, as a dialog over that window. The project the menu applies to is
 // the one that window is in, and the host is the one it runs on: the window's own processes name
-// its host, and the zmx session it holds a client for, the chat it runs, or, for a window on this
-// machine, the directory kitty reports name its project. So one key works at a local prompt and in
-// a window on a host the picker reads. A window none of those rules places is refused in one
-// line, as is an ssh to a destination outside zmx_servers, because a menu on the wrong project is
-// worse than no menu. Every action from the dialog asks where its terminal goes, whatever the
-// placement preference remembers, and a new chat asks which store first, over the stores the
-// picker reads that the window's host has. The dialog names the project and host it applies to,
-// and closes once the action is under way.
+// its host, and its project comes from the zmx session it holds a client for, from the chat it
+// runs, or, for a window on this machine, from the directory kitty reports. A chat on a host is
+// read from the window's own ssh command line, which names the directory the picker `cd`s into
+// and the session a resumed chat names, and then from the host's own rows; the title is the last
+// fallback, for a chat a reader opened by hand, and pi's `<app> - <name> - <project>` title is
+// read as its middle part. So one key works at a local prompt and in a window on a host the
+// picker reads. A window none of those rules places is refused in one line, as is an ssh to a
+// destination outside zmx_servers, because a menu on the wrong project is worse than no menu.
+// Every action from the dialog asks where its terminal goes, whatever the placement preference
+// remembers, and a new chat asks which store first, over the stores the picker reads that the
+// window's host has. The dialog names the project and host it applies to, and closes once the
+// action is under way.
 //
 // Transcript text is Markdown, so the preview pane renders it with glamour. The shared config
 // file ~/.config/sh2pil/config.yaml controls which stores are read (`harnesses: pi, claude`, or

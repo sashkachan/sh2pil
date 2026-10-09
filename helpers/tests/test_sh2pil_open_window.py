@@ -153,6 +153,37 @@ class WindowTargetTest(unittest.TestCase):
         self.assertEqual(target['cwd'], '/home/me/repo')
         self.assertEqual(target['project'], 'repo')
 
+    def test_a_host_window_with_pi_s_own_title_is_placed_by_the_middle_part(self):
+        # Pi's own title is `<app> - <name> - <project>`, and the name is the middle part: a
+        # window a reader opened by hand carries the whole title, not the name alone.
+        row = ssh_window('user@192.0.2.15', 'bash -lc pi',
+                         title='π - Fix ingress docs - sh2pil')
+        remote = [{'id': 'a', 'name': 'Fix ingress docs', 'cwd': '/home/me/infra',
+                   'modified': 1}]
+        target = self.target(row, remote=remote)
+        self.assertEqual(target['cwd'], '/home/me/infra')
+        self.assertEqual(target['project'], 'infra')
+
+    def test_a_host_window_that_resumes_a_session_is_placed_by_its_id(self):
+        # The picker writes the ssh command line, so a resumed chat names its session there
+        # even when the title has not caught up.
+        row = ssh_window('user@192.0.2.15',
+                         'cd -- /home/me/infra && { [ -x /bin/zsh ] && exec /bin/zsh -lic '
+                         "'pi --session ses_abc'; exec sh -c 'pi --session ses_abc'; }",
+                         title='pi')
+        remote = [{'id': 'ses_abc', 'name': 'Unnamed', 'cwd': '/home/me/infra', 'modified': 1}]
+        target = self.target(row, remote=remote)
+        self.assertEqual(target['cwd'], '/home/me/infra')
+
+    def test_a_host_window_that_names_only_its_directory_is_placed_by_it(self):
+        # A chat the host has not recorded yet still names the project it runs in, because
+        # the picker wrote `cd -- <directory>` in front of it.
+        row = ssh_window('user@192.0.2.15',
+                         'cd -- /home/me/newproj && { [ -x /bin/zsh ] && exec /bin/zsh -lic '
+                         "'pi'; exec sh -c 'pi'; }", title='pi')
+        target = self.target(row)
+        self.assertEqual(target['cwd'], '/home/me/newproj')
+
     def test_a_host_outside_the_setting_is_refused(self):
         row = ssh_window('elsewhere', 'bash -lc pi')
         with self.assertRaises(RuntimeError) as caught:

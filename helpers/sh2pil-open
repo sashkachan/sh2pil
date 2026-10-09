@@ -2045,28 +2045,51 @@ def zmx_session_cwd(name: str, server: str = '') -> str:
     return ''
 
 
-def remote_window_cwd(server: str, title: str) -> str:
-    """Return the project of the chat one remote window shows, named by the window's title.
+def remote_window_cwd(server: str, window: dict) -> str:
+    """Return the project of the chat one window on a host shows, or ''.
 
-    Pi publishes the session name in the window title, and that title travels back over the
-    ssh pty, so it is the one thing a remote window says about the chat it runs.  A title that
-    names no session there, or a host that cannot answer, yields no directory: a wrong
-    directory would open the next chat in the wrong project, which is worse than a refusal.
+    The window's own ssh command line is read first, because this program writes it: a chat
+    opened on a host is one ssh command that `cd`s into the project and runs the store, and a
+    resumed one names the session it resumes there, so the window itself says which chat it
+    runs.  The host's own rows turn either into a directory, so the answer is the host's and
+    not a guess.
+
+    The title is the fallback, for a window a reader opened by hand: Pi publishes the session
+    name in the title, and `window_session_names` reads the middle part of pi's own
+    `<app> - <name> - <project>`.  A window that names no session and no directory, and a host
+    that cannot answer, yield nothing: a wrong directory would open the next chat in the wrong
+    project, which is worse than a refusal.
     """
-    wanted = squeeze(title)
-    if not wanted:
+    chat = window_remote_chat(window)
+    directory = str(chat.get('directory') or '')
+    resumed = '' if chat.get('fork') else str(chat.get('session') or '')
+    names = window_session_names(str(window.get('title') or ''))
+    if not resumed and not names and not directory.startswith('/'):
         return ''
     try:
         rows = session_remote_list(server, 'all')
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
         return ''
-    matches = [row for row in rows
-               if squeeze(str(row.get('name') or '')) == wanted
-               and str(row.get('cwd') or '').startswith('/')]
-    if not matches:
-        return ''
-    matches.sort(key=lambda row: row.get('modified') or 0, reverse=True)
-    return str(matches[0]['cwd'])
+    rows = [row for row in rows
+            if isinstance(row, dict) and str(row.get('cwd') or '').startswith('/')]
+    if resumed:
+        matched = [row for row in rows if str(row.get('id') or '') == resumed]
+        if matched:
+            return str(matched[0]['cwd'])
+    if directory.startswith('/'):
+        # The directory the window `cd`s into is the chat's own project, which the picker wrote
+        # there.  It is read before the title because a name can belong to a session in more
+        # than one project, while this directory cannot.
+        matched = [row for row in rows
+                   if str(row.get('cwd') or '').rstrip('/') == directory.rstrip('/')]
+        if matched:
+            return str(newest_row(matched)['cwd'])
+        return directory
+    if names:
+        matched = [row for row in rows if squeeze(str(row.get('name') or '')) in names]
+        if matched:
+            return str(newest_row(matched)['cwd'])
+    return ''
 
 
 def target_stores(server: str = '') -> list[str]:
@@ -2112,9 +2135,10 @@ def window_target(identifier: str) -> dict:
     name = window_zmx_name(window)
     cwd = zmx_session_cwd(name, server) if name else ''
     if not cwd and server:
-        # A window on another host whose chat runs outside zmx: the title names the session
-        # its host recorded, and that session records the directory.
-        cwd = remote_window_cwd(server, window.get('title') or '')
+        # A window on another host that holds no zmx client: the window's own ssh command
+        # line, or the name in its title, says which chat it runs, and the host's rows name
+        # the directory.
+        cwd = remote_window_cwd(server, window)
     if not cwd and not server:
         # Only a local window can be placed by kitty: the directory it reports is the one the
         # program in front of the reader runs in, which is the project it is working on.  A
