@@ -80,14 +80,14 @@ sh2pil-last --help
 
 ## Dependencies
 
-Only **python3** is needed to run the picker and read sessions. **zsh** is needed for any
-action that opens something. The rest are stores, terminals, and the tools an action opens, and
-each of those is optional — a missing one is reported, not fatal.
+Only **python3** is needed to run the picker and read sessions; a **login shell** is needed for
+any action that opens something. The rest are stores, terminals, and the tools an action opens,
+and each of those is optional — a missing one is reported, not fatal.
 
 | Dependency | Needed for | Notes |
 |---|---|---|
 | **python3** 3.9+ | the helpers | Standard library only. Resolved in the order `SH2PIL_PYTHON`, the build-time path, `$(brew --prefix)/bin`, `/usr/local/bin`, `/usr/bin`, `PATH`, so a minimal `PATH` is fine. |
-| **zsh** | every action that opens something | Launches and tool runs use `zsh -lic`, so the child reads the login and interactive files and finds the Homebrew directory. Reads work without it; actions do not. |
+| **a login shell** | every action that opens something | New windows and tool runs use `<shell> -lic`, so the child reads your login and rc files and finds the Homebrew directory. Resolved as `$SHELL`, then the passwd entry, then `bash`, then `sh`; an installed shell is required, a particular one is not. |
 | **zoxide** | the project list | `sh2pil-sessions projects`, and the remote equivalent, read `zoxide query -l`. Without it there are no project groups. |
 | **zmx** | chats that outlive their window | The zmx pane, the `⚡` marker, the state column. Discovered on `PATH`, then `~/.local/share/mise/shims/zmx`, `$(brew --prefix)/bin/zmx`, `~/.local/bin/zmx`. |
 | **mise** | *nothing* | Only another place to find `zmx`, through its shim. Optional; `zmx_remote_binary` can name the shim explicitly. |

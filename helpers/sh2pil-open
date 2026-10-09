@@ -250,7 +250,38 @@ import tempfile
 import time
 import traceback
 
-SHELL = 'zsh'
+try:
+    import pwd
+except ImportError:  # only POSIX has a passwd database
+    pwd = None
+
+
+def login_shell() -> str:
+    """Return the shell that runs a tool command and opens a new window.
+
+    The reader's own shell is the right answer for both: a new window should be the shell
+    they chose, and the tool commands must be run by the shell whose rc file puts the
+    Homebrew directory, the agent socket, and the rest of their environment in place.
+
+    `$SHELL` first, because a terminal exports it; then the passwd entry, which is the
+    machine's own answer; then bash and sh.  A candidate that is not installed is skipped
+    rather than named, so a machine with no zsh opens bash, and nothing here requires a
+    particular shell to be present.
+    """
+    candidates = [os.environ.get('SHELL')]
+    if pwd is not None:
+        try:
+            candidates.append(pwd.getpwuid(os.getuid()).pw_shell)
+        except (KeyError, OSError):
+            pass
+    candidates += ['/bin/bash', '/usr/bin/bash', '/bin/sh']
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return 'sh'
+
+
+SHELL = login_shell()
 DEFAULT_EDITOR = 'nvim'
 
 # The session stores a host can be asked for, and the default one.  `sh2pil-sessions list --harness` takes
@@ -307,11 +338,11 @@ ZMX_CANDIDATES = (
 # session to the chat it runs, so a Codex or Claude Code resume gets a plain terminal.
 ZMX_ACTIONS = ('pi', 'new')
 
-# Tool commands run as `zsh -lic`: interactive so dot_zshrc is read, login so the login
-# files are read too.  A kitty child starts with
-# PATH=/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin, and this repo
-# keeps the Homebrew PATH in dot_zshrc with no .zprofile at all, so a plain `zsh -lc`
-# cannot find pi, node, or lazygit.  Measured 2026-09-26: `zsh -lc 'command -v pi'`
+# Tool commands run as `<shell> -lic`: interactive so the reader's own rc file is read, login
+# so the login files are read too.  A kitty child starts with
+# PATH=/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin, and the Homebrew
+# directory reaches such a child from an rc file rather than from a profile, so a plain `-lc`
+# cannot find pi, node, or lazygit.  Measured 2026-09-26 with zsh: `zsh -lc 'command -v pi'`
 # printed nothing, `zsh -lic 'command -v pi'` printed /opt/homebrew/bin/pi.
 
 
@@ -2890,7 +2921,7 @@ def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int
     """Open a terminal for argv in the asked-for place, or print how to.
 
     An empty argv means a plain interactive login shell, which is why the `shell`
-    action must not become `zsh -lc ''` (that exits at once).  An empty label means the
+    action must not become `<shell> -lc ''` (that exits at once).  An empty label means the
     terminal is left to title itself: kitty keeps its own template and tmux its automatic
     rename, so the program inside names the window.  `new` relies on that, because pi
     generates a session name and puts it in the title.

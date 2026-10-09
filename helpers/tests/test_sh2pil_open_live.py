@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'sh2pil-open'
 # Loading the helper from its source path writes a bytecode cache beside it, which would land in
@@ -2063,3 +2063,35 @@ class ClaudeStoreTest(unittest.TestCase):
         # The path cannot be read by sh2pil-last, so the read resolves the session on its host.
         self.assertIn('show aaa --harness claude --tail 400', remote)
         self.assertNotIn('sh2pil-last', remote)
+
+
+class LoginShellTest(unittest.TestCase):
+    """The shell that runs a tool command and opens a new window.
+
+    Nothing here may require a particular shell to be installed: a machine with no zsh must
+    still open a window, and the reader's own shell is the one they expect to get back.
+    """
+
+    def test_the_readers_own_shell_is_used_when_it_exists(self):
+        with patch.dict(os.environ, {'SHELL': '/bin/sh'}):
+            self.assertEqual(sh2pil_open.login_shell(), '/bin/sh')
+
+    def test_a_shell_that_is_not_installed_is_not_named(self):
+        with patch.dict(os.environ, {'SHELL': '/bin/no-such-shell'}):
+            chosen = sh2pil_open.login_shell()
+        self.assertNotEqual(chosen, '/bin/no-such-shell')
+        self.assertTrue(os.access(chosen, os.X_OK))
+
+    def test_without_shell_in_the_environment_the_passwd_entry_answers(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(sh2pil_open.pwd, 'getpwuid', return_value=Mock(pw_shell='/bin/sh')):
+            self.assertEqual(sh2pil_open.login_shell(), '/bin/sh')
+
+    def test_a_passwd_entry_that_cannot_be_read_still_answers(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(sh2pil_open.pwd, 'getpwuid', side_effect=KeyError('no entry')):
+            self.assertTrue(os.access(sh2pil_open.login_shell(), os.X_OK))
+
+    def test_the_resolved_shell_is_installed(self):
+        # SHELL is resolved once, at import, and the launchers use it directly.
+        self.assertTrue(os.access(sh2pil_open.SHELL, os.X_OK))

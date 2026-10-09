@@ -79,14 +79,15 @@ sh2pil-open live --json          # the chats a pi process is running here
 
 ## Requirements
 
-`sh2pil` needs **python3** to run and read sessions, and **zsh** to open anything. Every other
-entry below is a store, a terminal, or a tool an action opens, and **each of those is optional**:
-a missing one is reported in the header or on the row rather than failing the read.
+`sh2pil` needs **python3** to run and read sessions, and a **login shell** to open anything —
+any of them will do, and the one used is yours. Every other entry below is a store, a terminal,
+or a tool an action opens, and **each of those is optional**: a missing one is reported in the
+header or on the row rather than failing the read.
 
 | Dependency | Needed for | Notes |
 |---|---|---|
 | **python3** 3.9+ | the helpers themselves | Standard library only. Resolved automatically, in the order `SH2PIL_PYTHON`, the build-time path, `$(brew --prefix)/bin`, `/usr/local/bin`, `/usr/bin`, `PATH` — so a key-binding child's `PATH` need not hold it. |
-| **zsh** | every action that opens something | Launches and tool runs go through `zsh -lic`, so a `?rc`/`?profile` can put the Homebrew directory on the child's `PATH`. Without zsh the reads still work; the actions cannot start. |
+| **your login shell** | every action that opens something | New windows and tool runs go through `<shell> -lic`, so your own rc file can put the Homebrew directory on the child's `PATH`. The shell is `$SHELL`, then the passwd entry, then `bash`, then `sh`; a candidate that is not installed is skipped, so **nothing requires zsh**. |
 | **Pi** | `pi` rows and chats | Store `~/.pi/agent/sessions`; the `pi` CLI resumes and forks. |
 | **Claude Code** | `claude` rows and chats | Store `~/.claude/projects`. |
 | **Codex** | `codex` rows and chats | Store `~/.codex/sessions`. |
@@ -106,10 +107,11 @@ preview matches the terminal.
 
 ### Remote targets
 
-A host needs `python3`, and `zsh` or `bash` for its login shell. It does **not** need `sh2pil`
-installed: when a host has no helper, the picker sends the code over the connection and runs it
-with `python3 -`. A host that still carries the older helper names — `pib`, `pib-open`,
-`pi-last` — is used through a fallback chain, so an unmigrated machine keeps working.
+A host needs `python3`, and a login shell — `zsh` or `bash`, whichever it has. It does **not**
+need `sh2pil` installed: when a host has no helper, the picker sends the code over the
+connection and runs it with `python3 -`. A host that still carries the older helper names —
+`pib`, `pib-open`, `pi-last` — is used through a fallback chain, so an unmigrated machine keeps
+working.
 
 ### The live state column
 
