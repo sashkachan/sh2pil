@@ -122,6 +122,38 @@ func TestRemoteSessionActionsReachOneVerb(t *testing.T) {
 	}
 }
 
+// A chat that already runs inside a zmx session on its own host is attached to, whichever
+// route asks for it, so a resume never starts a second writer beside the process that already
+// writes the transcript.  A fork is a chat of its own, and a new chat belongs to another
+// store, so those two still start a session.
+func TestRemoteChatInAZmxSessionIsAttachedToWhereverTheActionComesFrom(t *testing.T) {
+	row := remoteRow()
+	row.Live, row.ZmxName = true, "pi-01a10260"
+	m := model{view: viewSessions, layout: "tab", harness: "pi", width: 120, height: 20,
+		sessions: []session{row}}
+	for _, action := range []string{"resume", "window"} {
+		place := "tab"
+		if action == "window" {
+			place = "window"
+		}
+		args, note := m.openArgs(action, row, false)
+		want := []string{"zmx-switch", row.ZmxName, "--cwd", row.CWD, "--place", place,
+			"--server", row.Server}
+		if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+			t.Errorf("%s args = %#v, want %#v", action, args, want)
+		}
+		if !strings.Contains(note, row.Server) {
+			t.Errorf("%s note = %q, want the host it attaches on", action, note)
+		}
+	}
+	for _, action := range []string{"fork", "new"} {
+		args, _ := m.openArgs(action, row, false)
+		if len(args) == 0 || args[0] != "session-remote-open" {
+			t.Errorf("%s args = %#v, want the remote open verb", action, args)
+		}
+	}
+}
+
 // A remote project is not a session: it still starts a new chat in a remote zmx session, and
 // a remote zmx row is still attached to, not resumed over SSH.
 func TestRemoteRowsThatAreNotSessionsKeepTheirOwnVerbs(t *testing.T) {

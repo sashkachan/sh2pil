@@ -2722,6 +2722,14 @@ func (m *model) remoteOpenArgs(action string, s session, place string) ([]string
 	default:
 		return nil, "that action opens a terminal on this machine; this session is on " + s.Server
 	}
+	// A chat that already runs inside a zmx session on that host is reached by attaching to
+	// that session, whichever route asked for it: the process that writes the transcript keeps
+	// it, and the terminal becomes a second client instead of a second writer.  A fork is a
+	// chat of its own and a new chat is another store's, so both start their own session.
+	if (action == "resume" || action == "window") && s.ZmxName != "" && s.Live {
+		return []string{"zmx-switch", s.ZmxName, "--cwd", s.CWD, "--place", place,
+			"--server", s.Server}, "attached to " + s.ZmxName + " on " + s.Server
+	}
 	cwd := s.CWD
 	if !s.Alive {
 		cwd = ""

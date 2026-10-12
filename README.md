@@ -93,7 +93,7 @@ header or on the row rather than failing the read.
 | **Codex** | `codex` rows and chats | Store `~/.codex/sessions`. |
 | **OpenCode** | `opencode` rows and chats | Keeps no files to read: the `opencode` CLI *is* the store, so it is discovered on `PATH`. |
 | **zoxide** | the project list | Its database is what `zi` offers, so without it there are no project groups — only sessions. Read on remote targets too. |
-| **zmx** | chats that outlive their window | The zmx pane, the `⚡` marker, and the state column. Found on `PATH`, then `~/.local/share/mise/shims/zmx`, `$(brew --prefix)/bin/zmx`, `~/.local/bin/zmx`. |
+| **zmx** | chats that outlive their window | The zmx pane, the `⚡` marker, and the state column. Found on `PATH`, then `~/.local/share/mise/shims/zmx`, `$(brew --prefix)/bin/zmx`, `~/.local/bin/zmx`, on this machine and on a remote host, where a chat started with `zmx: true` also gets a session of its own. |
 | **git** | the lazygit action | `/usr/bin/git`, then `PATH`; used to find the repository root. |
 | **ssh** | remote targets | A master on `~/.ssh/agent.sock` is reused, and is shared with plain `ssh` when `ssh_config` points `ControlPath` at it. |
 | **kitty** | the overlay bindings | `kitten`, which ships with kitty, does the window lookup and remote control. |
@@ -112,6 +112,19 @@ need `sh2pil` installed: when a host has no helper, the picker sends the code ov
 connection and runs it with `python3 -`. A host that still carries the older helper names —
 `pib`, `pib-open`, `pi-last` — is used through a fallback chain, so an unmigrated machine keeps
 working.
+
+A host that **does** have the helpers answers with its own copy, and that is the copy that can
+say which of its Pi processes run: without it a host's rows show no live state column and send
+no notifications. The helper is looked up on `PATH`, then in `~/.local/bin`, then in the
+directories a package manager installs to — `/opt/homebrew/bin`, `/usr/local/bin`,
+`/home/linuxbrew/.linuxbrew/bin` — because a non-interactive SSH command has no Homebrew
+directory on its `PATH`.
+
+With `zmx: true` a chat on a host runs inside a zmx session there, exactly as it does here: a
+resume, a fork, and a new chat each get a session of their own, so the chat outlives the window
+that opened it, and a chat that already runs in a session on that host is attached to instead of
+being started a second time. A host without zmx, and every machine with the flag off, keeps the
+plain SSH terminal.
 
 ### The live state column
 

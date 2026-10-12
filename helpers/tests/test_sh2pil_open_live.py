@@ -570,6 +570,38 @@ class ZmxSessionsTest(unittest.TestCase):
             self.assertEqual(sh2pil_open.zmx_remote_new('build-host', 'relative/app', 'tab'), 1)
         launch.assert_not_called()
 
+    def test_a_remote_zmx_session_is_named_and_labelled_as_the_local_one_is(self):
+        self.assertEqual(sh2pil_open.zmx_remote_session('/srv/api', 'aaa', set()),
+                         ('project=api pi=aaa', 'pi-aaa'))
+        self.assertEqual(sh2pil_open.zmx_remote_session('/srv/home infra', 'aaa', set()),
+                         ('project=home-infra pi=aaa', 'pi-aaa'))
+        # A name another session holds is never taken: `zmx attach` is an upsert, so a busy
+        # name would join the running session instead of starting the chat that was asked for.
+        self.assertEqual(sh2pil_open.zmx_remote_session('/srv/api', 'aaa', {'pi-aaa'}),
+                         ('project=api pi=aaa', 'pi-aaa-2'))
+        self.assertEqual(sh2pil_open.zmx_remote_session('/srv/api', '', set()),
+                         ('project=api', 'pi-api'))
+
+    def test_a_host_without_zmx_is_reported_and_a_chat_is_started_nowhere(self):
+        completed = sh2pil_open.subprocess.CompletedProcess(
+            ['ssh'], 127, b'', b'zmx not found in PATH or mise shims\n')
+        with (patch.object(sh2pil_open.subprocess, 'run', return_value=completed),
+              patch.object(sh2pil_open, 'launch') as launch,
+              contextlib.redirect_stderr(io.StringIO()) as note):
+            self.assertEqual(sh2pil_open.zmx_remote_new('build-host', '/srv/api', 'tab'), 1)
+            with self.assertRaises(sh2pil_open.RemoteZmxMissing):
+                sh2pil_open.zmx_remote_taken_names('build-host')
+        launch.assert_not_called()
+        self.assertIn('has no zmx', note.getvalue())
+
+    def test_a_failed_zmx_read_that_is_not_absence_still_travels_as_itself(self):
+        completed = sh2pil_open.subprocess.CompletedProcess(['ssh'], 1, b'', b'host is down\n')
+        with patch.object(sh2pil_open.subprocess, 'run', return_value=completed):
+            with self.assertRaises(RuntimeError) as raised:
+                sh2pil_open.zmx_remote_taken_names('build-host')
+        self.assertNotIsInstance(raised.exception, sh2pil_open.RemoteZmxMissing)
+        self.assertIn('host is down', str(raised.exception))
+
     def test_remote_attach_uses_ssh_and_quotes_the_session_name(self):
         with (patch.object(sh2pil_open, 'CONFIG', self.config),
               patch.object(sh2pil_open, 'launch', return_value=0) as launch):
@@ -995,9 +1027,25 @@ class RemoteSessionsTest(unittest.TestCase):
         self.assertIn('command -v some-other-helper', unknown)
         self.assertNotIn('command -v pib', unknown)
 
+    def test_the_copy_a_package_manager_installed_is_found_by_its_directory(self):
+        # macOS gives a non-interactive SSH command /usr/bin:/bin:/usr/sbin:/sbin, so the
+        # formula's copy under $(brew --prefix)/bin is reachable by its directory alone.  It
+        # must win over the copy sent from here: only a host's own helper can say which of
+        # its pi processes run, and a read that falls back marks nothing live.
+        command = sh2pil_open.remote_helper_command('sh2pil-sessions', 'list', '--json')
+        for directory in sh2pil_open.BREW_BIN_DIRS:
+            self.assertIn(f'[ -x {directory}/sh2pil-sessions ]', command)
+            self.assertIn(f'exec {directory}/sh2pil-sessions list --json', command)
+        self.assertLess(command.index('/opt/homebrew/bin/sh2pil-sessions'),
+                        command.index('exec python3 -'))
+        self.assertNotIn('cat >', command)
+
 
     def test_open_builds_an_ssh_terminal_for_the_remote_chat(self):
-        with patch.object(sh2pil_open, 'launch', return_value=0) as launch:
+        # The plain terminal is what a host keeps when the flag is off, which is the same
+        # answer this machine gives when zmx is absent.
+        with (patch.object(sh2pil_open, 'config_flag', return_value=False),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
             result = sh2pil_open.session_remote_open('build-host', '/srv/home infra', 'aaa',
                                                   'pi', False, '', '', 'pane')
         self.assertEqual(result, 0)
@@ -1012,7 +1060,8 @@ class RemoteSessionsTest(unittest.TestCase):
                          (str(pathlib.Path.home()), '', 'pane', False))
 
     def test_open_carries_a_fork_name_and_starts_a_new_chat_without_one(self):
-        with patch.object(sh2pil_open, 'launch', return_value=0) as launch:
+        with (patch.object(sh2pil_open, 'config_flag', return_value=False),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
             sh2pil_open.session_remote_open('build-host', '/srv/api', 'aaa', 'pi', True,
                                          'Fix docs (fork)')
         remote = launch.call_args.args[0][7]
@@ -1028,11 +1077,70 @@ class RemoteSessionsTest(unittest.TestCase):
         self.assertEqual(label, 'opencode api')
 
     def test_open_starts_in_the_hosts_home_when_the_project_is_gone(self):
-        with patch.object(sh2pil_open, 'launch', return_value=0) as launch:
+        with (patch.object(sh2pil_open, 'config_flag', return_value=False),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
             sh2pil_open.session_remote_open('build-host', '', 'aaa')
         remote = launch.call_args.args[0][7]
         self.assertNotIn('cd --', remote)
         self.assertIn('pi --session aaa', remote)
+
+    def test_open_runs_a_remote_chat_in_a_zmx_session_when_the_flag_is_on(self):
+        # `zmx: true` promises a chat that outlives the window it was started in, on every
+        # machine the picker reaches, so a remote resume is a zmx session there too.
+        with (patch.object(sh2pil_open, 'config_flag', return_value=True),
+              patch.object(sh2pil_open, 'zmx_remote_taken_names', return_value=set()),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
+            result = sh2pil_open.session_remote_open('build-host', '/srv/api', 'aaa',
+                                                     'pi', False, '', '', 'pane')
+        self.assertEqual(result, 0)
+        argv, cwd, label, place, emit = launch.call_args.args
+        self.assertEqual(argv[:3], [sh2pil_open.ssh_binary(), '-t', 'build-host'])
+        self.assertIn("cd -- /srv/api", argv[3])
+        self.assertIn("attach --labels 'project=api pi=aaa' pi-aaa /bin/sh -c", argv[3])
+        self.assertIn('pi --session aaa', argv[3])
+        # The session keeps the chat after the client goes, so the client is placed like the
+        # local one and the window is left to pi's own title.
+        self.assertEqual((cwd, label, place, emit),
+                         (str(pathlib.Path.home()), '', 'pane', False))
+
+    def test_open_names_a_zmx_session_for_the_project_when_the_chat_lacks_an_id(self):
+        with (patch.object(sh2pil_open, 'config_flag', return_value=True),
+              patch.object(sh2pil_open, 'zmx_remote_taken_names', return_value={'pi-api'}),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
+            sh2pil_open.session_remote_open('build-host', '/srv/api', '', 'pi')
+        remote = launch.call_args.args[0][3]
+        # A new chat generates its id inside the session, so the project names it and the
+        # pib-live extension adds the `pi=` label once the id exists.
+        self.assertIn('attach --labels project=api pi-api-2 /bin/sh -c', remote)
+        self.assertNotIn('pi=', remote.split('--labels')[1].split('/bin/sh')[0])
+
+    def test_open_falls_back_to_a_plain_terminal_when_the_host_has_no_zmx(self):
+        with (patch.object(sh2pil_open, 'config_flag', return_value=True),
+              patch.object(sh2pil_open, 'zmx_remote_taken_names',
+                           side_effect=sh2pil_open.RemoteZmxMissing(
+                               'zmx not found in PATH or mise shims')),
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch,
+              contextlib.redirect_stderr(io.StringIO()) as note):
+            result = sh2pil_open.session_remote_open('build-host', '/srv/api', 'aaa')
+        self.assertEqual(result, 0)
+        argv = launch.call_args.args[0]
+        self.assertEqual(argv[:7], [sh2pil_open.ssh_binary(), '-S',
+                                    sh2pil_open.ssh_control_path(), '-o',
+                                    'ControlMaster=no', '-t', 'build-host'])
+        self.assertIn('pi --session aaa', argv[7])
+        self.assertIn('has no zmx', note.getvalue())
+
+    def test_open_keeps_the_other_stores_on_a_plain_terminal_when_zmx_is_on(self):
+        # Only a Pi chat is wrapped: a zmx session is tied to the chat it runs by its
+        # `pi=` label, and another store would carry none.
+        with (patch.object(sh2pil_open, 'config_flag', return_value=True),
+              patch.object(sh2pil_open, 'zmx_remote_taken_names') as taken,
+              patch.object(sh2pil_open, 'launch', return_value=0) as launch):
+            sh2pil_open.session_remote_open('build-host', '/srv/api', 'aaa', 'claude')
+        taken.assert_not_called()
+        argv = launch.call_args.args[0]
+        self.assertEqual(argv[6], 'build-host')
+        self.assertIn('claude --resume aaa', argv[7])
 
     def test_open_refuses_a_destination_or_a_directory_it_must_not_run(self):
         with patch.object(sh2pil_open, 'launch') as launch:

@@ -1012,19 +1012,36 @@ def zoxide_remote_command(*arguments: str) -> str:
     return remote_login_command(shlex.join(['zoxide', *arguments]))
 
 
-def zmx_remote_taken_names(server: str) -> set[str]:
-    """Read every zmx name on the remote, including names held by ended sessions."""
+class RemoteZmxMissing(RuntimeError):
+    """A host has no zmx, so a chat there still keeps a plain terminal."""
+
+
+def remote_zmx_run(server: str, *arguments: str, timeout: int = 12) -> str:
+    """Run one zmx command on a host and return its standard output.
+
+    The destination is checked like every other, because this is the one place a host name
+    reaches ssh.  A host without zmx says so and exits 127, and that is raised as
+    RemoteZmxMissing: it is the only failure a caller may answer with a plain terminal,
+    while every other reason is the host's own problem and travels as it is.
+    """
     if not valid_ssh_destination(server):
         raise ValueError('server must be an SSH config alias or user@host')
     result = subprocess.run(
         [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
          '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server,
-         remote_zmx_command('ls', '--short')], capture_output=True, timeout=12,
+         remote_zmx_command(*arguments)], capture_output=True, timeout=timeout,
         env=ssh_env())
+    detail = result.stderr.decode('utf-8', 'replace').strip()
+    if result.returncode == 127:
+        raise RemoteZmxMissing(detail or 'zmx is not installed on the host')
     if result.returncode != 0:
-        detail = result.stderr.decode('utf-8', 'replace').strip()
         raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
-    return {line.strip() for line in result.stdout.decode('utf-8', 'replace').splitlines()
+    return result.stdout.decode('utf-8', 'replace')
+
+
+def zmx_remote_taken_names(server: str) -> set[str]:
+    """Read every zmx name on the remote, including names held by ended sessions."""
+    return {line.strip() for line in remote_zmx_run(server, 'ls', '--short').splitlines()
             if line.strip()}
 
 
@@ -1057,15 +1074,9 @@ def zmx_remote_sessions(server: str) -> list[dict]:
     """
     if not valid_ssh_destination(server):
         raise ValueError('server must be an SSH config alias or user@host')
-    result = subprocess.run(
-        [ssh_binary(), '-S', ssh_control_path(), '-o', 'ControlMaster=no',
-         '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', server,
-         remote_zmx_command('list')], capture_output=True, timeout=8, env=ssh_env())
-    if result.returncode != 0:
-        detail = result.stderr.decode('utf-8', 'replace').strip()
-        raise RuntimeError(detail or f'ssh exited with status {result.returncode}')
+    output = remote_zmx_run(server, 'list', timeout=8)
     entries = []
-    for line in result.stdout.decode('utf-8', 'replace').splitlines():
+    for line in output.splitlines():
         values = zmx_fields(line)
         name = values.get('name', '')
         if not name:
@@ -1120,18 +1131,28 @@ LEGACY_HELPER_NAMES = {
     'sh2pil-last': ('pi-last',),
 }
 
+# Where a package manager puts a helper.  The Homebrew formula installs all four programs
+# under $(brew --prefix)/bin, which a non-interactive SSH command does not have in its PATH
+# (macOS gives it /usr/bin:/bin:/usr/sbin:/sbin), and the directory is the only way to reach
+# that copy.  It matters which copy answers: the host's own is the one that can say which of
+# its pi processes run, and this machine's copy marks nothing live.
+BREW_BIN_DIRS = ('/opt/homebrew/bin', '/usr/local/bin', '/home/linuxbrew/.linuxbrew/bin')
+
 
 def remote_helper_command(name: str, *arguments: str, installed: bool = True) -> str:
     """Build the remote command that runs one helper, from the host or from standard input.
 
     A non-interactive SSH command gets a PATH that usually holds neither ~/.local/bin nor
     the Homebrew directory, and a login shell would print its own greetings into the JSON
-    this command returns, so the helper is found explicitly.  The host's own copy wins when
+    this command returns, so the helper is found explicitly: on PATH, then in ~/.local/bin,
+    then in the directories a package manager installs to.  The host's own copy wins when
     it has one, because the host then decides how its store is read and can also say which
-    of its sessions are running.  A host without it is sent the helper instead: `python3 -`
-    runs the script that arrives on standard input, so the host needs nothing but python3.
-    With installed false the host is not asked at all, and the bytes that arrive are run:
-    that is how a read falls back when the host's own copy is too old to answer it.
+    of its sessions are running; a Homebrew install is reached by its directory, because the
+    PATH of a non-interactive command does not hold it.  A host without it is sent the helper
+    instead: `python3 -` runs the script that arrives on standard input, so the host needs
+    nothing but python3.  With installed false the host is not asked at all, and the bytes that
+    arrive are run: that is how a read falls back when the host's own copy is too old to answer
+    it.
 
     A name an earlier release used is tried after the current one, so a host still running
     the older dotfiles answers instead of being sent the whole helper on every read.
@@ -1145,6 +1166,9 @@ def remote_helper_command(name: str, *arguments: str, installed: bool = True) ->
         own_copy = f'"$HOME/.local/bin/{candidate}"'
         probes.append(f'command -v {candidate} >/dev/null 2>&1; then exec {candidate} {call}')
         probes.append(f'[ -x {own_copy} ]; then exec {own_copy} {call}')
+        for directory in BREW_BIN_DIRS:
+            installed_copy = f'{directory}/{candidate}'
+            probes.append(f'[ -x {installed_copy} ]; then exec {installed_copy} {call}')
     return f'if ' + '; elif '.join(probes) + f'; else {shipped}; fi'
 
 
@@ -1409,18 +1433,16 @@ def write_bytes(data: bytes) -> None:
     buffer.write(data)
 
 
-def session_remote_argv(server: str, cwd: str, identifier: str, harness: str = 'pi',
-                        fork: bool = False, name: str = '') -> list[str]:
-    """Return the SSH command that runs one chat on a remote host.
+def chat_tool_argv(harness: str, identifier: str, fork: bool = False,
+                   name: str = '') -> list[str]:
+    """Return the words that start one chat on the machine that runs it.
 
-    The chat runs in the SSH terminal, in the directory its session records.  It starts
-    inside a login shell, because a Mac's non-interactive PATH holds neither pi, opencode,
-    nor claude, and a terminal is the one place where a shell's own startup output is
-    harmless.
+    A resume, a fork, and a new chat differ only in these words, so the local launcher and
+    the remote one ask every store for the same thing.  An empty identifier is a new chat.
     """
     if harness == 'opencode':
-        tool = ['opencode'] + (['--session', identifier] if identifier else [])
-    elif harness == 'claude':
+        return ['opencode'] + (['--session', identifier] if identifier else [])
+    if harness == 'claude':
         tool = ['claude']
         if identifier:
             # Claude Code resumes by session id from any directory, and a fork is a copy of
@@ -1430,18 +1452,31 @@ def session_remote_argv(server: str, cwd: str, identifier: str, harness: str = '
                 tool.append('--fork-session')
                 if name:
                     tool += ['--name', name]
-    elif harness == 'codex':
+        return tool
+    if harness == 'codex':
         # Codex resumes by session id from any directory, and forks the same way.
         tool = ['codex']
         if identifier:
             tool += ['fork', identifier] if fork else ['resume', identifier]
-    else:
-        tool = ['pi']
-        if identifier:
-            tool += ['--fork', identifier] if fork else ['--session', identifier]
-        if fork and name:
-            tool += ['--name', name]
-    inside = remote_login_command(shlex.join(tool))
+        return tool
+    tool = ['pi']
+    if identifier:
+        tool += ['--fork', identifier] if fork else ['--session', identifier]
+    if fork and name:
+        tool += ['--name', name]
+    return tool
+
+
+def session_remote_argv(server: str, cwd: str, identifier: str, harness: str = 'pi',
+                        fork: bool = False, name: str = '') -> list[str]:
+    """Return the SSH command that runs one chat on a remote host in a plain terminal.
+
+    The chat runs in the SSH terminal, in the directory its session records.  It starts
+    inside a login shell, because a Mac's non-interactive PATH holds neither pi, opencode,
+    nor claude, and a terminal is the one place where a shell's own startup output is
+    harmless.
+    """
+    inside = remote_login_command(shlex.join(chat_tool_argv(harness, identifier, fork, name)))
     # The group keeps the cd and the shell choice one command: without it a failed cd would
     # still fall through to the shells the snippet tries after the first.
     remote = f'cd -- {shlex.quote(cwd)} && {{ {inside}; }}' if cwd else inside
@@ -1458,11 +1493,27 @@ def session_remote_open(server: str, cwd: str, identifier: str, harness: str = '
     A remote row always opens a new terminal: a picker cannot switch to a window on another
     host, and a resume over SSH is a fresh process either way.  The window is left to pi's
     own title, which travels back over the SSH pty, so a remote chat is named as locally.
+
+    With `zmx: true` a Pi chat runs inside a zmx session on that host, as it does on this
+    machine: the session is created for the chat, so it outlives the window that opened it.
+    A caller that already knows the chat runs in a session on that host attaches with
+    `zmx-remote-switch` instead, which is what the picker does with the `pi=` handle on the
+    row: no second writer is started, and the process that writes the transcript keeps it.
+    Only Pi is wrapped, because a zmx session is tied to the chat it runs by its `pi=` label.
+    A host with no zmx keeps the plain terminal, the same way this machine does when zmx is
+    absent or the flag is off.
     """
     if not valid_ssh_destination(server):
         return fail('sh2pil-open: server must be an SSH config alias or user@host')
     if cwd and not cwd.startswith('/'):
         return fail('sh2pil-open: remote project directory must be an absolute path')
+    if harness == 'pi' and config_flag('zmx'):
+        try:
+            return zmx_remote_start(server, cwd, chat_tool_argv('pi', identifier, fork, name),
+                                    identifier, place, emit)
+        except RemoteZmxMissing as error:
+            print(f'sh2pil-open: {server} has no zmx ({error}); opening a plain terminal'
+                  ' instead', file=sys.stderr)
     if harness == 'opencode':
         project = pathlib.PurePosixPath(cwd).name
         label = label or (f'opencode {short_name(identifier)}' if identifier
@@ -2444,27 +2495,58 @@ def window_menu(identifier: str, emit: bool = False) -> int:
     return 0
 
 
-def zmx_remote_new(server: str, cwd: str, place: str, emit: bool = False) -> int:
-    """Start a fresh Pi chat inside a new zmx session on a remote host."""
+def zmx_remote_session(cwd: str, identifier: str, taken: set[str]) -> tuple[str, str]:
+    """Return the labels and the free name one chat's new remote zmx session is given.
+
+    The rule is the local wrapper's rule, so a session reads the same on either machine: a
+    chat that already has an id names its session after that id and carries the `pi=` label,
+    and a chat that will generate its id inside the session is named for the project, which
+    the pib-live extension then relabels with the id it learns.
+    """
+    project = zmx_token(pathlib.PurePosixPath(cwd).name, 'project')
+    labels = f'project={project}'
+    session = session_id(pathlib.Path(identifier)) if identifier else ''
+    if session:
+        labels += f' pi={session}'
+        base = f'pi-{zmx_token(short_name(session))}'
+    else:
+        base = f'pi-{project}'
+    return labels, zmx_free_name(base, taken)
+
+
+def zmx_remote_start(server: str, cwd: str, tool: list[str], identifier: str,
+                     place: str, emit: bool = False) -> int:
+    """Start one chat inside a new zmx session on a remote host, and open a client on it.
+
+    The session is created by the same `zmx attach --labels` the local path uses, wrapped in
+    one SSH terminal.  The child command runs directly in zmx rather than in the SSH login
+    shell, so the shell is named here and the snippet it runs picks the login shell that host
+    actually has: that is where pi finds its PATH.  A host with no zmx is reported as
+    RemoteZmxMissing, because a caller may answer it with a plain terminal instead.
+    """
     if not valid_ssh_destination(server):
         return fail('sh2pil-open: server must be an SSH config alias or user@host')
-    if not pathlib.Path(cwd).is_absolute():
+    if cwd and not pathlib.Path(cwd).is_absolute():
         return fail('sh2pil-open: remote project directory must be an absolute path')
     try:
-        taken = zmx_remote_taken_names(server)
-        project = zmx_token(pathlib.PurePosixPath(cwd).name, 'project')
-        name = zmx_free_name(f'pi-{project}', taken)
-        labels = f'project={project}'
-        # The child command runs directly in zmx, not in the remote login shell, so the
-        # shell is named here: /bin/sh exists on every host, and the snippet it runs picks
-        # the login shell that host actually has for Pi's PATH and setup.
-        command = remote_zmx_command('attach', '--labels', labels, name,
-                                     '/bin/sh', '-c', remote_login_command('pi'))
+        labels, name = zmx_remote_session(cwd, identifier, zmx_remote_taken_names(server))
+        command = remote_zmx_command('attach', '--labels', labels, name, '/bin/sh', '-c',
+                                     remote_login_command(shlex.join(tool)))
+    except RemoteZmxMissing:
+        raise
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
         return fail(f'sh2pil-open: could not start remote zmx session on {server}: {error}')
-    remote = with_remote_env(server, f'cd -- {shlex.quote(cwd)} && {command}')
-    argv = [ssh_binary(), '-t', server, remote]
+    remote = f'cd -- {shlex.quote(cwd)} && {command}' if cwd else command
+    argv = [ssh_binary(), '-t', server, with_remote_env(server, remote)]
     return launch(argv, str(pathlib.Path.home()), '', place, emit)
+
+
+def zmx_remote_new(server: str, cwd: str, place: str, emit: bool = False) -> int:
+    """Start a fresh Pi chat inside a new zmx session on a remote host."""
+    try:
+        return zmx_remote_start(server, cwd, ['pi'], '', place, emit)
+    except RemoteZmxMissing as error:
+        return fail(f'sh2pil-open: {server} has no zmx: {error}')
 
 
 def zmx_remote_switch(server: str, name: str, cwd: str, place: str,
@@ -3312,7 +3394,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remote_session_file.add_argument('file', help='the absolute transcript path on that host')
 
     remote_session_opening = commands.add_parser(
-        'session-remote-open', help='open a terminal on a session at another host')
+        'session-remote-open',
+        help='open a terminal on a session at another host, in a zmx session there when the'
+             ' zmx setting is on')
     remote_session_opening.add_argument('server', help='SSH config alias or user@host')
     remote_session_opening.add_argument('cwd', help='absolute project directory on the server')
     remote_session_opening.add_argument('session', nargs='?', default='',

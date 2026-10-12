@@ -198,7 +198,18 @@ dotfiles keeps working while it is migrated.
 
 A remote host may still carry the older helper names. `sh2pil-open` tries the current name
 first and falls back to `pib`, `pib-open`, and `pi-last`, so an unmigrated host answers instead
-of being sent the whole helper on every read.
+of being sent the whole helper on every read. The host's own copy is looked up on `PATH`, then in
+`~/.local/bin`, then in the directories a package manager installs to — `/opt/homebrew/bin`,
+`/usr/local/bin`, `/home/linuxbrew/.linuxbrew/bin` — because a non-interactive SSH command has no
+Homebrew directory on its `PATH`. Which copy answers matters: the host's own is the only one that
+can say which of its Pi processes run, and a read answered by the copy sent from here marks
+nothing live.
+
+With `zmx: true`, `session-remote-open` runs a Pi resume, fork, or new chat inside a zmx session
+on that host, so the chat outlives the terminal that opened it. A host without zmx says so and
+the plain SSH terminal is used instead, as it is when the flag is off. A chat that already runs
+in a session on that host is attached to instead (`zmx-remote-switch`), because a second `pi` on
+one transcript interleaves writes.
 
 ## Tests
 

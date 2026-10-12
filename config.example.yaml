@@ -69,7 +69,11 @@ notify: terminal
 # back, and the session's scrollback is readable with `zmx history`.  Each launch takes a
 # fresh name and labels the session `pi=<session id>` and `project=<directory name>`, which
 # is how the picker finds the window that shows a running chat.  A shell, lazygit, or an
-# editor gets no session.  Needs zmx installed; set to false to use a plain terminal.
+# editor gets no session.  This holds for a chat on this machine and for a chat on a host
+# in zmx_servers: a remote resume or fork opens a zmx session there too, so it survives the
+# terminal, and a chat that already runs in a session on that host is attached to instead of
+# resumed again.  Needs zmx installed, here and there; a host without it, and every machine
+# with the flag off, keeps a plain terminal.
 zmx: true
 
 # ---- host environment ----

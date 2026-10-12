@@ -151,7 +151,8 @@
 // (default_target: local, or one of the zmx_servers destinations), whether the picker closes
 // after a launched action (close_on_navigate, default true), whether a new, resumed, or
 // forked chat runs inside a zmx session of its own (zmx, default false; sh2pil-open opens and
-// labels that session), the order the project list opens in (`default_order: project`, or
+// labels that session, on this machine and on every host the picker reaches), the order the
+// project list opens in (`default_order: project`, or
 // `priority` for the flat list ordered by what needs a person), how the rows that wait on a
 // person are ranked (attention_sort), and how such a row is announced (notify).
 //
@@ -174,13 +175,20 @@
 // are, so every key works the same way on either. The host needs nothing installed for a session
 // read: the picker's own `sh2pil-sessions` and `sh2pil-last` travel to it when it has no copy, so both ends read
 // the store with one version of the code, and no file is written there. A host that does run the
-// dotfiles answers with its own copy and also marks the sessions its pi processes run. A remote
+// dotfiles answers with its own copy and also marks the sessions its pi processes run; a copy
+// installed by the Homebrew formula is reached by its directory, because a non-interactive SSH
+// command has no Homebrew directory on its PATH. A remote
 // row that runs inside a zmx session on that host is reached by attaching to that session: enter
 // and ctrl+t open a client, which is what the local `switch` does too, because the chat keeps the
-// process that already writes it and no second writer appears. Any other remote row is a process
-// that only that host can start, so enter resumes it over SSH, ctrl+t opens another terminal for
-// it, ctrl+f forks it, and ctrl+a starts a new chat in its project group; a row the host reports
-// as already running is asked about first. The copied command (ctrl+y) is the SSH one. The keys
+// process that already writes it and no second writer appears. Any other chat is a process that
+// only that host can start, so with `zmx: true` enter resumes it inside a zmx session of its own
+// on that host, which is the promise the same flag makes here: the chat outlives the window that
+// was opened for it, and `zmx attach` on the host brings it back. ctrl+t opens a second
+// terminal for it, ctrl+f forks it, and ctrl+a starts a new chat in its project group, each one
+// inside a zmx session that carries the chat's `pi=` label, so the row shows the state column
+// and the `⚡` marker exactly as a local one does. With the flag off, or on a host that has no
+// zmx, those keys open a plain SSH terminal instead, and a row the host reports as already
+// running is asked about first. The copied command (ctrl+y) is the SSH one. The keys
 // that act on this machine's store or directories stay local: rename and the transcript editor
 // say where the session is instead.  The delete is the exception: the store that holds a
 // transcript is the one that removes it, so ctrl+w acts on the host too, and so does the
@@ -213,9 +221,10 @@
 // override its path. Remote zoxide queries run in the host's own login shell, which is zsh
 // when the host has one and bash when it does not, so the host's `zi` setup provides its
 // PATH; `zoxide_remote_binary` can override the executable path when needed. A remote
-// session read needs no install on that host: the helper is looked up in PATH and then in
-// ~/.local/bin, and when the host has neither, the picker's own copy travels to it over the
-// connection, so the same code reads the store on both ends. A host that runs the dotfiles
+// session read needs no install on that host: the helper is looked up in PATH, then in
+// ~/.local/bin, then in the Homebrew directories, and when the host has none, the picker's own
+// copy travels to it over the connection, so the same code reads the store on both ends. A
+// host that runs the dotfiles
 // also answers with its own copy, and only then can it say which sessions its pi runs.
 //
 // `ssh_env` names the environment every session on every host is given, as comma-separated
