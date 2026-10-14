@@ -3055,6 +3055,19 @@ def zmx_free_name(base: str, taken: set[str] | None = None) -> str:
     return f'{base}-{suffix}'
 
 
+def zmx_feature_session_name(title: str, taken: set[str]) -> str:
+    """Return a unique, title-derived zmx name no longer than 38 bytes."""
+    slug = zmx_token(title, 'feature')[:22].rstrip('-_.') or 'feature'
+    base = f'pi-{slug}-{secrets.token_hex(5)}'
+    name = base
+    suffix = 2
+    while name in taken:
+        ending = f'-{suffix}'
+        name = base[:38 - len(ending)] + ending
+        suffix += 1
+    return name
+
+
 def zmx_session_name(identifier: str) -> str:
     """Return the zmx session that carries this pi session id, or ''."""
     return zmx_pi_sessions().get(session_id(pathlib.Path(identifier)), '')
@@ -3249,7 +3262,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     directory_editor = terminal('editor-dir', 'open an editor in a directory')
     directory_editor.add_argument('--editor', default=os.environ.get('EDITOR') or DEFAULT_EDITOR,
                                   help='editor to open (default: %(default)s)')
-    terminal('new', 'start a new pi session in a directory')
+    new = terminal('new', 'start a new pi session in a directory')
+    new.add_argument('--message-file', help='UTF-8 initial message for detached mode')
+    new.add_argument('--detached', action='store_true',
+                     help='start Pi in a detached local zmx session')
+    new.add_argument('--json', action='store_true',
+                     help='write detached session details as JSON')
+    new.add_argument('--feature-title', help='readable Pi name and source for detached zmx name')
     terminal('opencode-new', 'start a new OpenCode session in a directory')
     terminal('claude-new', 'start a new Claude Code session in a directory')
     terminal('codex-new', 'start a new Codex session in a directory')
@@ -3899,9 +3918,86 @@ def focus_session(identifier: str, emit: bool = False, target: str = '') -> int:
     return focus_window(window, emit)
 
 
+DETACHED_PI_INITIAL_INSTRUCTION = (
+    "The attached file contains the user's initial request. Read it and act on its contents now.")
+
+
+def detached_pi_new(cwd: str, args: argparse.Namespace) -> int:
+    """Start a fresh Pi session in local zmx without opening an attached client."""
+    if not args.detached or not args.json or not args.message_file or args.feature_title is None:
+        return fail('sh2pil-open: --message-file, --detached, --json, and --feature-title must be used together')
+    if args.place != 'tab' or args.emit_cmd or args.label:
+        return fail('sh2pil-open: detached mode cannot be combined with --place, --emit-cmd, or --label')
+    if not os.path.isdir(cwd):
+        return fail(f'sh2pil-open: {cwd} is not a directory')
+    cwd = str(pathlib.Path(cwd).resolve())
+    message_path = pathlib.Path(args.message_file).expanduser()
+    try:
+        message = message_path.read_bytes().decode('utf-8')
+    except (OSError, UnicodeDecodeError):
+        return fail('sh2pil-open: message file must be readable UTF-8 text')
+    if not message.strip():
+        return fail('sh2pil-open: message file is empty')
+    feature_title = args.feature_title.strip()
+    if not feature_title:
+        return fail('sh2pil-open: --feature-title must not be empty')
+    try:
+        message_path = message_path.resolve(strict=True)
+    except OSError:
+        return fail('sh2pil-open: message file must be a readable file')
+    if not message_path.is_file():
+        return fail('sh2pil-open: message file must be a readable file')
+
+    binary = zmx_binary()
+    if not binary:
+        return fail('sh2pil-open: detached mode requires zmx')
+    try:
+        listed = subprocess.run([binary, 'list', '--short'], capture_output=True,
+                                text=True, check=False)
+    except OSError:
+        return fail('sh2pil-open: could not query zmx sessions')
+    if listed.returncode:
+        return fail('sh2pil-open: could not query zmx sessions')
+    taken = {line.strip() for line in listed.stdout.splitlines() if line.strip()}
+    project = zmx_token(pathlib.Path(cwd).name, 'project')
+    name = zmx_feature_session_name(feature_title, taken)
+    env = dict(os.environ)
+    env.pop('ZMX_SESSION', None)
+    env['SH2PIL_ZMX'] = binary
+    env['PIB_ZMX'] = binary
+    command = [binary, 'run', name, '-d', 'pi', '--name', feature_title, '--',
+               f'@{message_path}', DETACHED_PI_INITIAL_INSTRUCTION]
+    try:
+        started = subprocess.run(command, cwd=cwd, env=env, capture_output=True,
+                                 text=True, check=False)
+    except OSError:
+        started = None
+    if started is None or started.returncode:
+        result = {'name': name, 'attach_command': shlex.join([binary, 'attach', name]),
+                  'status': 'uncertain'}
+        print(json.dumps(result))
+        return fail(f'sh2pil-open: detached launch status is uncertain; inspect zmx session {name}')
+    try:
+        labelled = subprocess.run([binary, 'set', name, f'project={project}'],
+                                  capture_output=True, text=True, check=False)
+    except OSError:
+        labelled = None
+    status = 'started' if labelled is not None and labelled.returncode == 0 else 'uncertain'
+    result = {'name': name, 'attach_command': shlex.join([binary, 'attach', name]),
+              'status': status}
+    print(json.dumps(result))
+    if status == 'uncertain':
+        return fail(f'sh2pil-open: detached launch started but its project label is uncertain; inspect zmx session {name}')
+    return 0
+
+
 def open_terminal(action: str, args: argparse.Namespace) -> int:
     """Open a terminal for a Pi, OpenCode, or Claude Code chat, shell, lazygit, or yazi."""
     cwd = str(pathlib.Path(args.cwd).expanduser())
+    if action == 'new' and (getattr(args, 'detached', False) or
+                            getattr(args, 'message_file', None) or getattr(args, 'json', False) or
+                            getattr(args, 'feature_title', None)):
+        return detached_pi_new(cwd, args)
     if action == 'attach':
         # Attach to the zmx session that runs this chat.  The session's own directory and
         # size are already its own, so only the client is started here.

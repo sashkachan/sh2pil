@@ -97,6 +97,27 @@ and each of those is optional — a missing one is reported, not fatal.
 | **nvim**, **lazygit**, **yazi** | the actions that open them | Defaults: the `tools.editor`, `tools.file_browser`, and `tools.git_tool` settings replace them, and a `tools.hosts.<destination>` entry replaces one for one host. |
 | **Pi**, **Claude Code**, **Codex**, **OpenCode** | the rows of that store | The three file-backed stores are read from `~/.pi/agent/sessions`, `~/.claude/projects`, and `~/.codex/sessions`; OpenCode is read through its CLI. |
 
+## Detached Pi launch
+
+To start a fresh Pi chat without attaching a terminal, pass a UTF-8 initial-message file and
+request JSON output:
+
+```sh
+sh2pil-open new "$PWD" --message-file /path/to/message.txt --detached --json \\
+  --feature-title "Prompt-backed detached Pi launch"
+```
+
+This opt-in mode requires local zmx and `--feature-title`. Pi uses the readable feature title
+as its session name. zmx uses a safe slug derived from the title and a unique suffix; the name
+is limited to 38 bytes. The session is labelled with the project, and the command returns the
+zmx session name and `zmx attach` command. Pi receives the message file as an attachment plus
+a fixed helper instruction to read and act on that attachment. This is a framed attachment,
+not a byte-for-byte raw user-message turn. The file must remain available when Pi starts. Its
+contents are not placed in argv, environment variables, or helper logs. A result with
+`status: "uncertain"` means the session may have started; inspect that named session before
+you retry. Detached mode does not open a terminal or silently fall back to the normal `new`
+behavior. The ordinary `new <cwd>` path is unchanged.
+
 ## The live state column
 
 The `● needs you`, `● bash`, and `● idle` marks come from records written by a Pi extension
