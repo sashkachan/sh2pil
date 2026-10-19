@@ -6,10 +6,12 @@ rather than an installed copy.
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'sh2pil-last'
 # Loading the helper from its source path writes a bytecode cache beside it, which would land in
@@ -60,3 +62,36 @@ class DisplayPathTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TerminalWindowTest(unittest.TestCase):
+    """Which terminal the window id names, and which id a binding child is in."""
+
+    def test_a_uuid_is_read_from_ghostty(self):
+        with patch.object(sh2pil_last, 'ghostty_window',
+                          return_value=('/tmp', 'pi - chat - tmp')) as ghostty, \
+                patch.object(sh2pil_last, 'kitty_window') as kitty:
+            self.assertEqual(sh2pil_last.terminal_window('AAA-BBB'),
+                             ('/tmp', 'pi - chat - tmp'))
+        ghostty.assert_called_once_with('AAA-BBB')
+        kitty.assert_not_called()
+
+    def test_a_number_is_read_from_kitty(self):
+        with patch.object(sh2pil_last, 'kitty_window', return_value=('/srv', 'title')) as kitty, \
+                patch.object(sh2pil_last, 'ghostty_window') as ghostty:
+            self.assertEqual(sh2pil_last.terminal_window('42'), ('/srv', 'title'))
+        kitty.assert_called_once_with('42')
+        ghostty.assert_not_called()
+
+    def test_a_kitty_child_names_its_window(self):
+        with patch.dict(sh2pil_last.os.environ, {'KITTY_WINDOW_ID': '42'}, clear=True):
+            self.assertEqual(sh2pil_last.terminal_identifier(), '42')
+
+    def test_inside_ghostty_the_front_surface_is_named(self):
+        with patch.dict(sh2pil_last.os.environ, {'TERM_PROGRAM': 'ghostty'}, clear=True), \
+                patch.object(sh2pil_last, 'ghostty_front_terminal', return_value='AAA'):
+            self.assertEqual(sh2pil_last.terminal_identifier(), 'AAA')
+
+    def test_nothing_known_names_nothing(self):
+        with patch.dict(sh2pil_last.os.environ, {}, clear=True):
+            self.assertEqual(sh2pil_last.terminal_identifier(), '')
