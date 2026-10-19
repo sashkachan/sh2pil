@@ -405,3 +405,49 @@ class RemoteLastTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GhosttyWindowFactsTest(unittest.TestCase):
+    """A Ghostty surface is read like a kitty window, when the id says it is one."""
+
+    def facts(self, identifier, rows=()):
+        with patch.object(sessions, 'kitty_windows', return_value=[]), \
+                patch.object(sessions, 'ghostty_windows',
+                             return_value=list(rows)) as ghostty:
+            return sessions.window_facts(identifier), ghostty
+
+    def test_a_uuid_is_asked_of_ghostty(self):
+        facts, ghostty = self.facts('AAA-BBB', [
+            {'id': 'AAA-BBB', 'cwd': '/tmp', 'title': 'pi - chat - tmp', 'commands': []}])
+        self.assertEqual(facts['cwd'], '/tmp')
+        self.assertEqual(facts['title'], 'pi - chat - tmp')
+        # No pid, no tty, no command line: the list stays empty, and the window reads as a
+        # Pi window instead of being mistaken for another store.
+        self.assertEqual(facts['commands'], [])
+        ghostty.assert_called_once()
+
+    def test_a_numeric_id_never_asks_ghostty(self):
+        facts, ghostty = self.facts('42')
+        self.assertEqual(facts, {})
+        ghostty.assert_not_called()
+
+    def test_an_unknown_uuid_is_an_empty_mapping(self):
+        facts, _ = self.facts('AAA-BBB')
+        self.assertEqual(facts, {})
+
+
+class TerminalIdentifierTest(unittest.TestCase):
+    """Which terminal a binding child is in, when no --window is given."""
+
+    def test_a_kitty_child_names_its_window(self):
+        with patch.dict(sessions.os.environ, {'KITTY_WINDOW_ID': '42'}, clear=True):
+            self.assertEqual(sessions.terminal_identifier(), '42')
+
+    def test_inside_ghostty_the_front_surface_is_named(self):
+        with patch.dict(sessions.os.environ, {'TERM_PROGRAM': 'ghostty'}, clear=True), \
+                patch.object(sessions, 'ghostty_front_terminal', return_value='AAA'):
+            self.assertEqual(sessions.terminal_identifier(), 'AAA')
+
+    def test_nothing_known_names_nothing(self):
+        with patch.dict(sessions.os.environ, {}, clear=True):
+            self.assertEqual(sessions.terminal_identifier(), '')
