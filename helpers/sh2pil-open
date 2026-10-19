@@ -310,12 +310,6 @@ SESSIONS_DIR = pathlib.Path.home() / '.pi/agent/sessions'
 # helper, so the old directory is read as a fallback for one release: a record found under
 # both names is read from the current one.  The extension writes the current name.
 LIVE_DIR = pathlib.Path.home() / '.local/state/sh2pil/live'
-# One file per surface this program opened: a token names a file, and the file holds the
-# terminal id the AppleScript answer carried.  The terminal that was just created waits for
-# it, writes it into its own environment, and removes it.  This is the only exact statement
-# about where a chat started: Ghostty exports no per-surface variable and reports no pid.
-TERMINALS_DIR = pathlib.Path.home() / '.local/state/sh2pil/terminals'
-TERMINAL_WAIT = 2.0
 LEGACY_LIVE_DIR = pathlib.Path.home() / '.local/state/pib-open/live'
 # What LIVE_DIR is before a caller or a test patches it: only the shipped value has a legacy
 # directory to fall back to.
@@ -646,7 +640,7 @@ def ghostty_focus_argv(prefix: list[str], target: str) -> list[str]:
 
 
 def ghostty_launch_argv(prefix: list[str], argv: list[str], cwd: str, label: str,
-                        place: str, marker: str = '') -> list[str]:
+                        place: str) -> list[str]:
     """Return the argv that creates one Ghostty surface and runs argv in it.
 
     A surface configuration carries the command and the directory, so the command runs
@@ -654,11 +648,6 @@ def ghostty_launch_argv(prefix: list[str], argv: list[str], cwd: str, label: str
     the front window, and `pane` splits the focused terminal to the right.  A label pins
     the tab title; an empty label leaves the title to the program inside, which is what
     `new` relies on because pi names its own window.
-
-    `marker` is written from inside this script, as soon as the new terminal has an id: the
-    surface, and the leaf waiting in it, start before this script finishes, so a file written
-    after the answer arrives can be too late.  The shell line is quoted by AppleScript, and
-    the token in the path is hex.
     """
     lines = ['tell application "Ghostty"',
              '  set cfg to new surface configuration']
@@ -675,16 +664,9 @@ def ghostty_launch_argv(prefix: list[str], argv: list[str], cwd: str, label: str
     else:
         lines.append('  set created to new tab in front window with configuration cfg')
         lines.append('  set target to focused terminal of created')
-    if marker:
-        # `id` arrives as its own type, so it is coerced before it is quoted.
-        lines.append('  do shell script "printf %s " & quoted form of ((id of target) as text)'
-                     ' & " > " & quoted form of ' + apple_string(marker))
     if label:
         lines.append('  perform action ' + apple_string('set_tab_title:' + label)
                      + ' on target')
-    # The id comes back in the same answer, so the leaf inside the new surface has it
-    # before the command needs it.
-    lines.append('  return (id of target)')
     lines.append('end tell')
     return prefix + ['-e', '\n'.join(lines)]
 
@@ -707,17 +689,9 @@ def ghostty_launch(inside: list[str], cwd: str, label: str, place: str) -> int |
     prefix = ghostty_prefix()
     if not prefix:
         return None
-    token = secrets.token_hex(8)
-    marker = str(TERMINALS_DIR / token)
     try:
-        TERMINALS_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        marker = ''
-    try:
-        result = subprocess.run(
-            ghostty_launch_argv(prefix, terminal_leaf_argv(token, inside), cwd, label, place,
-                                marker),
-            capture_output=True, timeout=GHOSTTY_TIMEOUT)
+        result = subprocess.run(ghostty_launch_argv(prefix, inside, cwd, label, place),
+                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
     except subprocess.TimeoutExpired:
         message = (f'sh2pil-open: Ghostty did not answer in {GHOSTTY_TIMEOUT} s; '
                    'restart Ghostty to make it scriptable again')
@@ -735,182 +709,6 @@ def ghostty_launch(inside: list[str], cwd: str, label: str, place: str) -> int |
     print(message, file=sys.stderr)
     note_failure(message)
     return 1
-
-
-TERMINAL_DEPTH = 8
-
-
-def process_table() -> dict[int, tuple[int, str]]:
-    """Return pid -> (parent pid, start time) for every process, in one call."""
-    try:
-        result = subprocess.run(['ps', '-eo', 'pid=,ppid=,lstart='], capture_output=True,
-                                timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return {}
-    if result.returncode != 0:
-        return {}
-    table: dict[int, tuple[int, str]] = {}
-    for line in result.stdout.decode('utf-8', 'replace').splitlines():
-        fields = line.split(None, 2)
-        if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
-            continue
-        table[int(fields[0])] = (int(fields[1]), ' '.join(fields[2].split()))
-    return table
-
-
-def terminal_links() -> dict[int, tuple[str, str]]:
-    """Return pid -> (terminal id, start time) for the surfaces this program opened.
-
-    A file whose process is gone is removed: the id it holds can never be reached again.
-    """
-    links: dict[int, tuple[str, str]] = {}
-    directory = TERMINALS_DIR / 'pids'
-    try:
-        paths = list(directory.iterdir())
-    except OSError:
-        return links
-    table = process_table()
-    for path in paths:
-        if not path.name.isdigit():
-            continue
-        try:
-            identifier, _, started = path.read_text(encoding='utf-8').strip().partition('\t')
-        except OSError:
-            continue
-        pid = int(path.name)
-        if not identifier or not started:
-            continue
-        if table and pid not in table:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-            continue
-        links[pid] = (identifier, started)
-    return links
-
-
-def terminal_ancestors(pid: int, table: dict[int, tuple[int, str]]) -> list[int]:
-    """Return one process and its parents, nearest first."""
-    found = []
-    current = pid
-    for _ in range(TERMINAL_DEPTH):
-        found.append(current)
-        parent = table.get(current, (0, ''))[0]
-        if parent <= 1:
-            break
-        current = parent
-    return found
-
-
-def write_terminal_link(pid: int, identifier: str, started: str) -> None:
-    """Record which surface one process was started in, for the owner read."""
-    if not identifier or not started:
-        return
-    try:
-        directory = TERMINALS_DIR / 'pids'
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / str(pid)).write_text(f'{identifier}\t{started}\n', encoding='utf-8')
-    except OSError:
-        pass
-
-
-def terminal_leaf_argv(token: str, inside: list[str]) -> list[str]:
-    """Return the command that marks one surface, then runs the real command in it."""
-    return [sys.executable, str(pathlib.Path(__file__).resolve()), 'terminal-leaf', token,
-            '--'] + list(inside)
-
-
-def terminal_marker(token: str) -> str:
-    """Wait for the terminal id this program wrote for one surface, and consume it.
-
-    The wait is short and bounded: a marker that never arrives must delay a chat by no more
-    than this, which is why the caller runs the command anyway, without the value.
-    """
-    path = TERMINALS_DIR / token
-    deadline = time.time() + TERMINAL_WAIT
-    identifier = ''
-    while time.time() < deadline:
-        try:
-            identifier = path.read_text(encoding='utf-8').strip()
-        except OSError:
-            identifier = ''
-        if identifier:
-            break
-        time.sleep(0.05)
-    try:
-        path.unlink()
-    except OSError:
-        pass
-    return identifier
-
-
-def terminal_leaf(token: str, argv: list[str]) -> int:
-    """Become the command the surface was created for, carrying this terminal's id.
-
-    The variable is the one stable statement about where a chat began: it is captured at
-    session start, so a zmx session records it, and a chat that outlives its window still
-    names the surface it was opened in.
-    """
-    if not re.fullmatch(r'[0-9a-f]{16}', token):
-        return fail('sh2pil-open: terminal-leaf needs the token this program made')
-    if not argv:
-        return fail('sh2pil-open: terminal-leaf needs a command after --')
-    identifier = terminal_marker(token)
-    if identifier:
-        write_terminal_link(os.getpid(), identifier, process_start(os.getpid()))
-    environment = dict(os.environ)
-    if identifier:
-        environment['SH2PIL_TERMINAL_ID'] = identifier
-    try:
-        os.execve(argv[0], argv, environment)
-    except OSError as error:
-        return fail(f'sh2pil-open: could not run {argv[0]}: {error}')
-
-
-def ghostty_terminal_id(entry: dict) -> str:
-    """Return the exact Ghostty terminal one chat was opened in, or ''.
-
-    A surface opened by this program starts its command through a leaf, and that leaf records
-    the surface id against its own pid.  The pid survives the exec, so the command that runs
-    is a descendant of it: the ancestor chain names the surface even when the command is a
-    shell that started the chat.  The recorded start time rejects a reused pid.
-
-    The environment is not read: macOS does not report another process's environment, and
-    Ghostty exports no per-surface variable.  A zmx session records `SH2PIL_TERMINAL_ID` at
-    session start, which is why that value is still exported and still asked for first.
-    """
-    links = terminal_links()
-    if not links:
-        return ''
-    table = process_table()
-    for pid in entry.get('pids') or []:
-        for candidate in terminal_ancestors(pid, table):
-            link = links.get(candidate)
-            if link is not None and link[1] == table.get(candidate, (0, ''))[1]:
-                return link[0]
-    return ''
-
-
-def ghostty_owner(entry: dict, terminals: list[dict]) -> tuple[dict | None, str, int]:
-    """Name the Ghostty surface that shows one chat, and say why, or how many could.
-
-    Exact only: the id the chat carries, or one unique title.  Two matching titles are not a
-    match, because focusing the wrong terminal for a live chat starts a second writer.
-    """
-    terminal = ghostty_terminal_id(entry)
-    if terminal:
-        for row in terminals:
-            if row['target'] == terminal:
-                return row, 'the chat carries the id of this terminal', 1
-    name = squeeze(str(entry.get('name') or ''))
-    if name:
-        matches = [row for row in terminals if name in window_session_names(row['title'])]
-        if len(matches) == 1:
-            return matches[0], 'the title of this terminal names the chat', 1
-        if matches:
-            return None, '', len(matches)
-    return None, '', 0
 
 
 def ghostty_terminal(identifier: str) -> dict | None:
@@ -1095,17 +893,6 @@ def zmx_client_window(name: str, target: str = '',
     that window has moved on: the window still has to hold a client for this session, so
     the commands kitty reports for it are checked before it is offered as a match.
     """
-    terminal = zmx_run(['print-env', name, 'SH2PIL_TERMINAL_ID']).strip()
-    if terminal:
-        if target and target != terminal:
-            return None
-        row = ghostty_terminal(terminal)
-        if row is None:
-            # The surface is gone, so the recorded id is stale.  An attach beats focusing a
-            # terminal that no longer exists.
-            return None
-        row['label'] = f'ghostty terminal {terminal} (zmx {name})'
-        return row
     window_id = zmx_run(['print-env', name, 'KITTY_WINDOW_ID']).strip()
     if not window_id.isdigit() or (target and target != window_id):
         return None
@@ -3297,16 +3084,9 @@ def owner_window(entry: dict, target: str = '') -> tuple[dict | None, str, int]:
             if window['target'] == target:
                 return window, 'the caller named this Ghostty terminal', max(1, len(windows))
         return None, '', len(windows)
-    if len(windows) > 1:
+    if len(windows) != 1:
         return None, '', len(windows)
-    if len(windows) == 1:
-        return windows[0], 'the terminal holds this pi process', 1
-    # No medium that reports a process placed it.  Ghostty reports none, so the id the chat
-    # carries, and then one unique title, are the only exact answers it can give.
-    row, reason, choices = ghostty_owner(entry, ghostty_terminals())
-    if row is not None:
-        return row, reason, 1
-    return None, '', choices
+    return windows[0], 'the terminal holds this pi process', 1
 
 
 def live_number(value) -> float:
@@ -3462,31 +3242,18 @@ def live_sessions(root: pathlib.Path = SESSIONS_DIR) -> list[dict]:
     # Ask each medium once, then match every session against that one answer.
     prefix = kitten_prefix()
     windows = (kitty_windows(prefix) if prefix else []) + tmux_panes()
-    ghostty: list[dict] | None = None
     for entry in found:
         matches = match_windows(windows, entry['pids'])
         entry['owner'] = matches[0]['label'] if len(matches) == 1 else ''
         entry['owner_reason'] = 'the terminal holds this pi process' if len(matches) == 1 else ''
         entry['owner_choices'] = len(matches)
-        if matches:
-            continue
-        # zmx keeps the window out of pi's ancestry, so ask the session's label instead.
-        zmx_match = zmx_window(entry['id'], windows=windows)
-        if zmx_match is not None:
-            entry['owner'] = zmx_match['label']
-            entry['owner_reason'] = 'the zmx session carries this pi session id'
-            entry['owner_choices'] = 1
-            continue
-        # Ghostty reports no pid, so it is asked only for a chat nothing else placed, and
-        # only once for all of them: one call lists every surface.
-        if ghostty is None:
-            ghostty = ghostty_terminals()
-        if not ghostty:
-            continue
-        row, reason, choices = ghostty_owner(entry, ghostty)
-        entry['owner'] = row['label'] if row is not None else ''
-        entry['owner_reason'] = reason
-        entry['owner_choices'] = choices
+        if not matches:
+            # zmx keeps the window out of pi's ancestry, so ask the session's label instead.
+            zmx_match = zmx_window(entry['id'], windows=windows)
+            if zmx_match is not None:
+                entry['owner'] = zmx_match['label']
+                entry['owner_reason'] = 'the zmx session carries this pi session id'
+                entry['owner_choices'] = 1
     return found
 
 
@@ -4115,12 +3882,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remote_editor.add_argument('--emit-cmd', action='store_true',
                                help='print the command instead of running it')
 
-    leaf = commands.add_parser(
-        'terminal-leaf', help='mark one terminal with its id, then run a command in it')
-    leaf.add_argument('token', help='the token this program wrote for the new surface')
-    leaf.add_argument('command', nargs=argparse.REMAINDER,
-                      help='the command to run after a --')
-
     remote_pasting = commands.add_parser(
         'paste-remote', help="store this clipboard's image on a host and print its path")
     remote_pasting.add_argument('server', help='SSH config alias or user@host')
@@ -4396,12 +4157,6 @@ def main(argv: list[str]) -> int:
 
     if args.action == 'paste-remote':
         return paste_remote(args.server, args.emit_cmd)
-
-    if args.action == 'terminal-leaf':
-        command = list(args.command)
-        if command[:1] == ['--']:
-            command = command[1:]
-        return terminal_leaf(args.token, command)
 
     if args.action in ('window-target', 'window-session', 'window-menu', 'paste-window'):
         # One resolution for the four verbs: a named window, or the terminal this process
