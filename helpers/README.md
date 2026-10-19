@@ -93,7 +93,7 @@ and each of those is optional — a missing one is reported, not fatal.
 | **mise** | *nothing* | Only another place to find `zmx`, through its shim. Optional; `zmx_remote_binary` can name the shim explicitly. |
 | **git** | the lazygit action | Used to find the repository root. |
 | **ssh** | remote targets | For the master socket the reads and the actions share. |
-| **kitty** / **Ghostty** / **tmux** | the terminals | `kitten` does the window lookup and remote control; tmux is the fallback, and the pane host. Ghostty is a medium on macOS from 1.3.0 on, through AppleScript, and macOS asks once for the Automation permission; a refused permission prints the command instead. |
+| **kitty** / **tmux** | the terminals | `kitten` does the window lookup and remote control; tmux is the fallback, and the pane host. |
 | **nvim**, **lazygit**, **yazi** | the actions that open them | Defaults: the `tools.editor`, `tools.file_browser`, and `tools.git_tool` settings replace them, and a `tools.hosts.<destination>` entry replaces one for one host. |
 | **Pi**, **Claude Code**, **Codex**, **OpenCode** | the rows of that store | The three file-backed stores are read from `~/.pi/agent/sessions`, `~/.claude/projects`, and `~/.codex/sessions`; OpenCode is read through its CLI. |
 

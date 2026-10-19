@@ -27,10 +27,8 @@ Session choice:
        project, such as a background agent, writes its transcript more often,
        and then the newest file is not the session in front of the user.
     3. Otherwise the newest session whose recorded cwd is the window cwd.  With
-       --window the script reads the window from kitty (`kitten @ ls`), or from
-       Ghostty on macOS (a window id that is a UUID is a Ghostty surface); in a
-       shell inside either it uses the medium's own idea of this window.  Without
-       a terminal it uses $PWD.
+       --window the script reads the window from kitty (`kitten @ ls`); in a
+       shell inside kitty it uses $KITTY_WINDOW_ID.  Without kitty it uses $PWD.
     4. Otherwise the newest session of any directory, plus a warning on stderr.
 
 Pass --window @active-kitty-window-id in a kitty binding, and add
@@ -49,7 +47,6 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import time
@@ -550,108 +547,6 @@ def kitty_window(window: str) -> tuple[str, str]:
     return '', ''
 
 
-GHOSTTY_LIST = """\
-function run() {
-  const app = Application('Ghostty');
-  const rows = [];
-  const wins = app.windows();
-  for (let wi = 0; wi < wins.length; wi++) {
-    const w = wins[wi];
-    const tabs = w.tabs();
-    for (let ti = 0; ti < tabs.length; ti++) {
-      const t = tabs[ti];
-      const terms = t.terminals();
-      for (let si = 0; si < terms.length; si++) {
-        const s = terms[si];
-        rows.push({ terminal: s.id(), name: s.name(), cwd: s.workingDirectory() });
-      }
-    }
-  }
-  return JSON.stringify(rows);
-}
-"""
-
-GHOSTTY_TIMEOUT = 10
-
-
-def ghostty_prefix() -> list[str] | None:
-    """Return the `osascript` argv that reaches a running Ghostty, or None."""
-    if sys.platform != 'darwin' or not shutil.which('osascript'):
-        return None
-    try:
-        answer = subprocess.run(['osascript', '-e', 'application "Ghostty" is running'],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if answer.returncode != 0:
-        return None
-    if answer.stdout.decode('utf-8', 'replace').strip() != 'true':
-        return None
-    return ['osascript']
-
-
-def ghostty_windows() -> list[dict]:
-    """Return one entry per Ghostty surface: its id, its cwd, its title."""
-    prefix = ghostty_prefix()
-    if not prefix:
-        return []
-    try:
-        result = subprocess.run(prefix + ['-l', 'JavaScript', '-e', GHOSTTY_LIST],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        rows = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
-    except ValueError:
-        return []
-    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
-
-
-def ghostty_window(window: str) -> tuple[str, str]:
-    """Ask Ghostty for the cwd and the title of one surface.  Return '' on failure."""
-    for row in ghostty_windows():
-        if str(row.get('terminal')) == str(window):
-            cwd = row.get('cwd')
-            title = row.get('name')
-            return (cwd if isinstance(cwd, str) else '',
-                    title if isinstance(title, str) else '')
-    return '', ''
-
-
-def ghostty_front_terminal() -> str:
-    """Return the id of the Ghostty surface in front, or ''."""
-    prefix = ghostty_prefix()
-    if not prefix:
-        return ''
-    script = ('tell application "Ghostty" to get id of focused terminal of selected tab '
-              'of front window')
-    try:
-        result = subprocess.run(prefix + ['-e', script], capture_output=True,
-                                timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return ''
-    if result.returncode != 0:
-        return ''
-    return result.stdout.decode('utf-8', 'replace').strip()
-
-
-def terminal_window(identifier: str) -> tuple[str, str]:
-    """Read one terminal's cwd and title from the medium its id belongs to."""
-    return ghostty_window(identifier) if '-' in str(identifier) else kitty_window(identifier)
-
-
-def terminal_identifier() -> str:
-    """Return the id of the terminal this process runs in, or ''."""
-    window = os.environ.get('KITTY_WINDOW_ID', '')
-    if window:
-        return window
-    if os.environ.get('TERM_PROGRAM') == 'ghostty':
-        return ghostty_front_terminal()
-    return ''
-
-
 def newest_first(root: pathlib.Path) -> list[pathlib.Path]:
     """List transcript files, newest first."""
     files = []
@@ -676,7 +571,7 @@ def pick_session(args: argparse.Namespace) -> tuple[pathlib.Path | None, str]:
 
     cwd = title = ''
     if args.window:
-        cwd, title = terminal_window(args.window)
+        cwd, title = kitty_window(args.window)
     name, basename = parse_title(title)
 
     if name:
@@ -733,10 +628,10 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if args.window.startswith('@'):
         # kitty did not substitute the placeholder; fall back to this window
-        args.window = ''
-    if not args.window:
-        # In a shell inside a terminal, use the window that holds the shell.
-        args.window = terminal_identifier()
+        args.window = os.environ.get('KITTY_WINDOW_ID', '')
+    elif not args.window:
+        # In a shell inside kitty, use the window that holds the shell.
+        args.window = os.environ.get('KITTY_WINDOW_ID', '')
 
     path, warning = pick_session(args)
     if warning:

@@ -86,10 +86,6 @@ from a plain shell, and from tmux.  The environment is detected in this order:
 
     tmux    $TMUX is set -- the pane is the medium the caller is working in, so the new
             terminal belongs there even when the pane sits inside kitty
-    ghostty a running Ghostty that answers AppleScript, asked first when the caller runs
-            inside Ghostty.  A tab, a window, and a split are created directly.  This is
-            macOS only, needs Ghostty 1.3.0 or newer, and macOS asks once for the
-            Automation permission; when it is refused, the command is printed instead.
     kitty   a working `kitten @ ls` -- inside kitty the controlling terminal answers,
             so no KITTY_* variables are needed, which is what a key-binding child has.
             Outside kitty, the newest socket in /tmp that answers is used instead.
@@ -513,287 +509,6 @@ def kitty_windows(prefix: list[str]) -> list[dict]:
                     'prefix': prefix,
                 })
     return windows
-
-
-# Ghostty is the second terminal medium.  Its interface reports an id, a title, and a
-# working directory for a surface -- no pid, no tty, and no command line -- so a surface is
-# named here by its id alone, and a chat is placed in one only by an exact id.
-
-
-def inside_ghostty() -> bool:
-    """True when this process runs in a Ghostty surface."""
-    return os.environ.get('TERM_PROGRAM') == 'ghostty'
-
-
-def apple_string(value: str) -> str:
-    """Return a value as an AppleScript string expression.
-
-    AppleScript has no escape for a newline inside a literal, so a value that holds one is
-    joined with `linefeed`.  A quote or a backslash is escaped.
-    """
-    parts = str(value).split('\n')
-    return ' & linefeed & '.join(
-        '"' + part.replace('\\', '\\\\').replace('"', '\\"') + '"' for part in parts)
-
-
-GHOSTTY_LIST = '''
-function run() {
-  const app = Application('Ghostty');
-  const rows = [];
-  const wins = app.windows();
-  for (let wi = 0; wi < wins.length; wi++) {
-    const w = wins[wi];
-    const tabs = w.tabs();
-    for (let ti = 0; ti < tabs.length; ti++) {
-      const t = tabs[ti];
-      const terms = t.terminals();
-      for (let si = 0; si < terms.length; si++) {
-        const s = terms[si];
-        rows.push({ window: w.id(), tab: t.id(), terminal: s.id(),
-                    name: s.name(), cwd: s.workingDirectory() });
-      }
-    }
-  }
-  return JSON.stringify(rows);
-}
-'''
-
-
-GHOSTTY_TIMEOUT = 10
-
-
-def ghostty_prefix() -> list[str] | None:
-    """Return the `osascript` argv that reaches a *running* Ghostty, or None.
-
-    Ghostty answers AppleScript from 1.3.0 on macOS, and macOS gates that behind the
-    Automation permission.  The application is asked whether it is running before any
-    script that would start it: a reader who closed the app gets the printed command, not
-    a surprise window.  Linux is not a medium: `+new-window` covers one window and there
-    is no tab or split interface.
-    """
-    if sys.platform != 'darwin' or not shutil.which('osascript'):
-        return None
-    try:
-        answer = subprocess.run(['osascript', '-e', 'application "Ghostty" is running'],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if answer.returncode != 0:
-        return None
-    if answer.stdout.decode('utf-8', 'replace').strip() != 'true':
-        return None
-    return ['osascript']
-
-
-def ghostty_terminals(prefix: list[str] | None = None) -> list[dict]:
-    """Return one entry per Ghostty surface, shaped like a kitty window.
-
-    The interface reports an id, a title, and a working directory, so `pids` and
-    `commands` stay empty and `match_windows()` can never place a session here.  One call
-    returns the whole instance and costs about half a second, so it stays out of the
-    common path: `launch()` and the exact-id lookup are the callers.
-    """
-    if prefix is None:
-        prefix = ghostty_prefix()
-    if not prefix:
-        return []
-    try:
-        result = subprocess.run(prefix + ['-l', 'JavaScript', '-e', GHOSTTY_LIST],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        rows = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
-    except ValueError:
-        return []
-    if not isinstance(rows, list):
-        return []
-    terminals = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        identifier = row.get('terminal')
-        if not isinstance(identifier, str) or not identifier:
-            continue
-        terminals.append({
-            'medium': 'ghostty',
-            'label': f'ghostty terminal {identifier}',
-            'target': identifier,
-            'title': row['name'] if isinstance(row.get('name'), str) else '',
-            'cwd': row['cwd'] if isinstance(row.get('cwd'), str) else '',
-            'pids': [],
-            'commands': [],
-            'prefix': prefix,
-            'window': row['window'] if isinstance(row.get('window'), str) else '',
-            'tab': row['tab'] if isinstance(row.get('tab'), str) else '',
-        })
-    return terminals
-
-
-def ghostty_focus_argv(prefix: list[str], target: str) -> list[str]:
-    """Return the argv that brings one Ghostty surface, and its window, forward."""
-    script = ('tell application "Ghostty" to focus (first terminal whose id is '
-              + apple_string(target) + ')')
-    return prefix + ['-e', script]
-
-
-def ghostty_launch_argv(prefix: list[str], argv: list[str], cwd: str, label: str,
-                        place: str) -> list[str]:
-    """Return the argv that creates one Ghostty surface and runs argv in it.
-
-    A surface configuration carries the command and the directory, so the command runs
-    there instead of being typed into a shell that may be busy.  `tab` and `window` take
-    the front window, and `pane` splits the focused terminal to the right.  A label pins
-    the tab title; an empty label leaves the title to the program inside, which is what
-    `new` relies on because pi names its own window.
-    """
-    lines = ['tell application "Ghostty"',
-             '  set cfg to new surface configuration']
-    if argv:
-        lines.append('  set command of cfg to ' + apple_string(shlex.join(argv)))
-    if cwd:
-        lines.append('  set initial working directory of cfg to ' + apple_string(cwd))
-    if place == 'window':
-        lines.append('  set created to new window with configuration cfg')
-        lines.append('  set target to focused terminal of selected tab of created')
-    elif place == 'pane':
-        lines.append('  set target to split (focused terminal of selected tab of front '
-                     'window) direction right with configuration cfg')
-    else:
-        lines.append('  set created to new tab in front window with configuration cfg')
-        lines.append('  set target to focused terminal of created')
-    if label:
-        lines.append('  perform action ' + apple_string('set_tab_title:' + label)
-                     + ' on target')
-    lines.append('end tell')
-    return prefix + ['-e', '\n'.join(lines)]
-
-
-def ghostty_failure(text: str) -> str:
-    """Turn an AppleScript refusal into one line that names the cause."""
-    message = ' '.join(text.split()) or 'no reason given'
-    if '-1743' in message or 'not authorized' in message.lower():
-        return ('sh2pil-open: macOS refused AppleScript control of Ghostty; allow it under '
-                'Privacy & Security > Automation')
-    return 'sh2pil-open: Ghostty refused the terminal: ' + message
-
-
-def ghostty_launch(inside: list[str], cwd: str, label: str, place: str) -> int | None:
-    """Create a Ghostty surface, or None when Ghostty cannot be reached.
-
-    0 means the surface was created.  1 means Ghostty refused, and the reason is on stderr
-    and in the state log, because a key-binding child has no screen.
-    """
-    prefix = ghostty_prefix()
-    if not prefix:
-        return None
-    try:
-        result = subprocess.run(ghostty_launch_argv(prefix, inside, cwd, label, place),
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        message = (f'sh2pil-open: Ghostty did not answer in {GHOSTTY_TIMEOUT} s; '
-                   'restart Ghostty to make it scriptable again')
-        print(message, file=sys.stderr)
-        note_failure(message)
-        return 1
-    except OSError as error:
-        message = 'sh2pil-open: could not run osascript: ' + str(error)
-        print(message, file=sys.stderr)
-        note_failure(message)
-        return 1
-    if result.returncode == 0:
-        return 0
-    message = ghostty_failure(result.stderr.decode('utf-8', 'replace'))
-    print(message, file=sys.stderr)
-    note_failure(message)
-    return 1
-
-
-def ghostty_terminal(identifier: str) -> dict | None:
-    """Return the one Ghostty surface with this id, or None."""
-    return next((row for row in ghostty_terminals() if row['target'] == str(identifier)), None)
-
-
-def ghostty_action_argv(prefix: list[str], action: str, target: str) -> list[str]:
-    """Return the argv that performs one Ghostty action on one surface."""
-    script = ('tell application "Ghostty" to perform action ' + apple_string(action)
-              + ' on (first terminal whose id is ' + apple_string(target) + ')')
-    return prefix + ['-e', script]
-
-
-def ghostty_input_argv(prefix: list[str], value: str, target: str) -> list[str]:
-    """Return the argv that types text into one Ghostty surface, as a paste."""
-    script = ('tell application "Ghostty" to input text ' + apple_string(value)
-              + ' to (first terminal whose id is ' + apple_string(target) + ')')
-    return prefix + ['-e', script]
-
-
-def ghostty_front_terminal() -> str:
-    """Return the id of the Ghostty surface in front, or ''.
-
-    Ghostty exports no per-surface variable, so the front surface is the only statement the
-    interface makes about "this terminal".  It is right while the picker or the key-binding
-    child owns the front window, and wrong for a surface in a background window: that is the
-    limit a later phase closes with the marker this program writes when it opens a surface.
-    """
-    prefix = ghostty_prefix()
-    if not prefix:
-        return ''
-    script = ('tell application "Ghostty" to get id of focused terminal of selected tab '
-              'of front window')
-    try:
-        result = subprocess.run(prefix + ['-e', script], capture_output=True,
-                                timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return ''
-    if result.returncode != 0:
-        return ''
-    return result.stdout.decode('utf-8', 'replace').strip()
-
-
-def current_terminal() -> tuple[str, str]:
-    """Return the medium and the id of the terminal this process runs in, or ('', '').
-
-    A kitty child always exports its window id, and that is believed first.  Inside Ghostty
-    the front surface is named by the interface.  Inside tmux the pane names itself, which
-    is what a binding inside a pane has.
-    """
-    window_id = os.environ.get('KITTY_WINDOW_ID', '')
-    if window_id:
-        return 'kitty', window_id
-    if inside_ghostty():
-        terminal = ghostty_front_terminal()
-        if terminal:
-            return 'ghostty', terminal
-    pane = os.environ.get('TMUX_PANE', '')
-    if os.environ.get('TMUX') and pane:
-        return 'tmux', pane
-    return '', ''
-
-
-def terminal_medium(identifier: str) -> str:
-    """Name the medium an id belongs to: kitty ids are numbers, Ghostty ids are UUIDs."""
-    return 'ghostty' if '-' in str(identifier) else 'kitty'
-
-
-def ghostty_title_server(title: str) -> str:
-    """Name the configured host a Ghostty title mentions, or ''.
-
-    A surface reports no command line, so the title is the only hint that it may be running
-    ssh.  A title that names a host this picker reads is refused rather than placed as a
-    local project: a path and a directory from this machine mean nothing on that host.
-    """
-    tokens = set(re.split(r'[^A-Za-z0-9_.-]+', squeeze(title)))
-    tokens.discard('')
-    if not tokens:
-        return ''
-    for server in configured_servers():
-        for name in {server, server.split('@')[-1]}:
-            if name and name in tokens:
-                return server
-    return ''
 
 
 def tmux_panes() -> list[dict]:
@@ -2269,7 +1984,7 @@ def paste_clipboard_text(prefix: list[str], identifier: str) -> int:
     return 0
 
 
-def paste_window(identifier: str, medium: str = 'kitty') -> int:
+def paste_window(identifier: str) -> int:
     """Put this clipboard's image where the session in one window can read it.
 
     The window's own processes say which host runs its session, so the same key works on a
@@ -2278,8 +1993,6 @@ def paste_window(identifier: str, medium: str = 'kitty') -> int:
     Nothing is typed into a window unless a path is ready: a key-binding child has no screen,
     so a failure goes to stderr and to the state log instead of into somebody's prompt.
     """
-    if medium == 'ghostty':
-        return ghostty_paste_window(identifier)
     prefix = kitten_prefix()
     if prefix is None:
         return paste_failure('sh2pil-open: no kitty is running; paste-window types into a window')
@@ -2306,41 +2019,6 @@ def paste_window(identifier: str, medium: str = 'kitty') -> int:
         path = str(image)
     if not send_window_text(prefix, identifier, path):
         return paste_failure(f'sh2pil-open: kitty would not type into window {identifier}')
-    return 0
-
-
-def ghostty_paste_window(identifier: str) -> int:
-    """Type one path into a Ghostty surface, or run its own paste when no image waits.
-
-    The interface cannot report the window's command line, so a surface whose title names a
-    configured host is refused: a path from this machine means nothing on that host, and a
-    wrong paste into a live prompt is worse than a line that says why nothing happened.
-    """
-    prefix = ghostty_prefix()
-    if not prefix:
-        return paste_failure('sh2pil-open: Ghostty is not running; paste-window types into a '
-                             'terminal')
-    terminal = ghostty_terminal(identifier)
-    if terminal is None:
-        return paste_failure(f'sh2pil-open: no Ghostty terminal {identifier}')
-    server = ghostty_title_server(terminal['title'])
-    if server:
-        return paste_failure(f'sh2pil-open: Ghostty terminal {identifier} names {server} in its '
-                             'title; nothing was typed, because the path means nothing there')
-    image = clipboard_image()
-    if image is None:
-        argv = ghostty_action_argv(prefix, 'paste_from_clipboard', identifier)
-        failure = ('sh2pil-open: no image on this clipboard, and Ghostty would not paste')
-    else:
-        argv = ghostty_input_argv(prefix, str(image), identifier)
-        failure = f'sh2pil-open: Ghostty would not type into terminal {identifier}'
-    try:
-        result = subprocess.run(argv, capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return paste_failure(f'sh2pil-open: Ghostty did not answer in {GHOSTTY_TIMEOUT} s; '
-                             'restart Ghostty to make it scriptable again')
-    if result.returncode != 0:
-        return paste_failure(failure)
     return 0
 
 
@@ -2487,16 +2165,13 @@ def target_stores(server: str = '') -> list[str]:
             if isinstance(store, dict) and store.get('present') and store.get('harness')]
 
 
-def window_target(identifier: str, medium: str = 'kitty') -> dict:
+def window_target(identifier: str) -> dict:
     """Return the host, project, and stores one kitty window's menu applies to.
 
     Raises RuntimeError with one line a reader can act on when the window cannot be placed:
     no kitty, no such window, an ssh to a destination the picker does not read, or a directory
-    none of the rules below can find.  A Ghostty surface is placed by the rules in
-    `ghostty_window_target`, because the interface reports no command line.
+    none of the rules below can find.
     """
-    if medium == 'ghostty':
-        return ghostty_window_target(identifier)
     prefix = kitten_prefix()
     if prefix is None:
         raise RuntimeError('no kitty is running; the cmd+. key needs one')
@@ -2528,11 +2203,10 @@ def window_target(identifier: str, medium: str = 'kitty') -> dict:
             'stores': target_stores(server)}
 
 
-def print_window_target(identifier: str, as_json: bool = False,
-                        medium: str = 'kitty') -> int:
+def print_window_target(identifier: str, as_json: bool = False) -> int:
     """Print the target one window's menu would open on."""
     try:
-        target = window_target(identifier, medium)
+        target = window_target(identifier)
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
         return fail(f'sh2pil-open: {error}')
     if as_json:
@@ -2543,29 +2217,6 @@ def print_window_target(identifier: str, as_json: bool = False,
     print(f"project {target['project']}  ({target['cwd']})")
     print(f"stores  {', '.join(target['stores']) or 'unknown'}")
     return 0
-
-
-def ghostty_window_target(identifier: str) -> dict:
-    """Place the project of one Ghostty surface, or refuse with one line.
-
-    The interface reports a working directory and a title and no command line, so a surface
-    that runs ssh cannot be told from a local one by what it runs.  A configured host named
-    in the title is refused instead of being placed as a local project: a local shell in a
-    directory that merely exists is the wrong answer, and a refusal is not.
-    """
-    terminal = ghostty_terminal(identifier)
-    if terminal is None:
-        raise RuntimeError(f'no Ghostty terminal {identifier}')
-    server = ghostty_title_server(terminal['title'])
-    if server:
-        raise RuntimeError(f'Ghostty terminal {identifier} names {server} in its title, and '
-                           'Ghostty reports no command line, so its host cannot be read here')
-    cwd = terminal['cwd']
-    if not cwd or not cwd.startswith('/') or not pathlib.Path(cwd).is_dir():
-        raise RuntimeError(f'cannot find the project of Ghostty terminal {identifier}: it '
-                           'reports no usable working directory')
-    return {'server': '', 'cwd': cwd, 'project': os.path.basename(cwd) or cwd,
-            'stores': target_stores('')}
 
 
 # Pi publishes the session it runs in the window title, and that is the one thing a window on
@@ -2740,7 +2391,7 @@ def remote_window_session(server: str, harness: str, window: dict, chat: dict) -
                        'or a directory for it')
 
 
-def window_session(identifier: str, harness: str = 'pi', medium: str = 'kitty') -> dict:
+def window_session(identifier: str, harness: str = 'pi') -> dict:
     """Return the host and the session one kitty window runs, or no host at all.
 
     The f3 and f4 bindings show the transcript of the chat in the window the reader is in, and
@@ -2760,19 +2411,6 @@ def window_session(identifier: str, harness: str = 'pi', medium: str = 'kitty') 
     if harness not in CHAT_READERS:
         raise ValueError(f'{harness!r} has no transcript reader; expected pi, claude, or codex')
     local = {'host': ''}
-    if medium == 'ghostty':
-        # No command line means no host: this machine is the answer for a surface that runs
-        # here, and a surface whose title names a host this picker reads is refused rather
-        # than read as a local chat.
-        terminal = ghostty_terminal(identifier)
-        if terminal is None:
-            return local
-        server = ghostty_title_server(terminal['title'])
-        if server:
-            raise RuntimeError('the Ghostty terminal ' + str(identifier) + ' names ' + server
-                               + ' in its title, and Ghostty reports no command line, so its '
-                               'chat cannot be read from here')
-        return local
     prefix = kitten_prefix()
     if prefix is None:
         return local
@@ -2798,11 +2436,10 @@ def window_session(identifier: str, harness: str = 'pi', medium: str = 'kitty') 
             'name': str(row.get('name') or '')}
 
 
-def print_window_session(identifier: str, harness: str, as_json: bool = False,
-                         medium: str = 'kitty') -> int:
+def print_window_session(identifier: str, harness: str, as_json: bool = False) -> int:
     """Print the host and the session one window's chat runs on."""
     try:
-        answer = window_session(identifier, harness, medium)
+        answer = window_session(identifier, harness)
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
         return fail(f'sh2pil-open: {error}')
     if as_json:
@@ -2835,7 +2472,7 @@ def picker() -> pathlib.Path:
     raise SystemExit('sh2pil-open: sh2pil not found; set SH2PIL_PATH or add it to PATH')
 
 
-def window_menu(identifier: str, emit: bool = False, medium: str = 'kitty') -> int:
+def window_menu(identifier: str, emit: bool = False) -> int:
     """Open the picker's next-step menu for one window, as the cmd+. binding asks.
 
     A failure is reported here and not by the picker, because this process is the overlay:
@@ -2843,7 +2480,7 @@ def window_menu(identifier: str, emit: bool = False, medium: str = 'kitty') -> i
     key did nothing instead of watching the overlay close.
     """
     try:
-        target = window_target(identifier, medium)
+        target = window_target(identifier)
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as error:
         return fail(f'sh2pil-open: {error}')
     command = [str(picker()), '--menu', '--menu-cwd', target['cwd']]
@@ -3044,23 +2681,12 @@ def focus_window(window: dict, emit: bool = False) -> int:
         command = window['prefix'] + ['focus-window', '--match', f'id:{window["target"]}']
     elif window['medium'] == 'tmux':
         command = ['tmux', 'select-window', '-t', window['target']]
-    elif window['medium'] == 'ghostty':
-        prefix = window.get('prefix') or ghostty_prefix()
-        if not prefix:
-            return 2
-        command = ghostty_focus_argv(prefix, window['target'])
     else:
         return 2
     if emit:
         print(shlex.join(command))
         return 0
-    try:
-        result = subprocess.run(
-            command, capture_output=True,
-            timeout=GHOSTTY_TIMEOUT if window['medium'] == 'ghostty' else None)
-    except subprocess.TimeoutExpired:
-        return fail(f'sh2pil-open: could not focus {window["label"]}: no answer in '
-                    f'{GHOSTTY_TIMEOUT} s')
+    result = subprocess.run(command, capture_output=True)
     if result.returncode != 0:
         return fail(f'sh2pil-open: could not focus {window["label"]}: '
                     + result.stderr.decode('utf-8', 'replace').strip())
@@ -3079,10 +2705,6 @@ def owner_window(entry: dict, target: str = '') -> tuple[dict | None, str, int]:
         for window in windows:
             if window['target'] == target:
                 return window, 'the terminal holds this pi process', len(windows)
-        # Ghostty reports no pid, so a surface is placed only by an id the caller named.
-        for window in ghostty_terminals():
-            if window['target'] == target:
-                return window, 'the caller named this Ghostty terminal', max(1, len(windows))
         return None, '', len(windows)
     if len(windows) != 1:
         return None, '', len(windows)
@@ -3507,22 +3129,14 @@ def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int
     """
     inside = [SHELL, '-lic', shlex.join(argv)] if argv else [SHELL, '-l']
     printed = f'cd {shlex.quote(cwd)} && {shlex.join(inside)}' if cwd else shlex.join(inside)
+    if emit:
+        print(printed)
+        return 0
 
     # The picker has suspended itself and handed this process its terminal.  Run the action
     # there instead of asking tmux or kitty to create another pane, tab, or window.
     if place == 'current':
-        if emit:
-            print(printed)
-            return 0
         return subprocess.run(inside, cwd=cwd or None).returncode
-
-    if emit:
-        # A Ghostty action is an AppleScript program, not a shell line, so a dry run inside
-        # Ghostty shows the program that would run there.
-        dry = ghostty_prefix() if inside_ghostty() and not os.environ.get('TMUX') else None
-        print(shlex.join(ghostty_launch_argv(dry, inside, cwd, label, place))
-              if dry else printed)
-        return 0
 
     # tmux first: a pane inside kitty keeps $KITTY_LISTEN_ON in its environment, and a kitty
     # tab outside the pane would leave the medium the caller works in.  That stray variable
@@ -3542,11 +3156,6 @@ def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int
             return 0
         print('sh2pil-open: tmux refused the new window: '
               + result.stderr.decode('utf-8', 'replace').strip(), file=sys.stderr)
-
-    # Inside Ghostty the running app is the medium the reader works in, so it comes before a
-    # kitty socket that a tmux pane or an old session may still answer on.
-    if inside_ghostty() and ghostty_launch(inside, cwd, label, place) == 0:
-        return 0
 
     prefix = kitten_prefix()
     if prefix:
@@ -3572,14 +3181,8 @@ def launch(argv: list[str], cwd: str, label: str, place: str, emit: bool) -> int
             return 0
         print('sh2pil-open: kitty launch failed: '
               + result.stderr.decode('utf-8', 'replace').strip(), file=sys.stderr)
-
-    # Not in Ghostty, not in tmux, and kitty did not take it: the running app is the last
-    # medium that can create a surface without a printed command.
-    if not inside_ghostty() and ghostty_launch(inside, cwd, label, place) == 0:
-        return 0
-    if not prefix:
-        print('sh2pil-open: no kitty, no tmux, and no Ghostty here; run this:',
-              file=sys.stderr)
+    else:
+        print('sh2pil-open: no kitty and no tmux here; run this:', file=sys.stderr)
     print(printed)
     return 0
 
@@ -4158,22 +3761,29 @@ def main(argv: list[str]) -> int:
     if args.action == 'paste-remote':
         return paste_remote(args.server, args.emit_cmd)
 
-    if args.action in ('window-target', 'window-session', 'window-menu', 'paste-window'):
-        # One resolution for the four verbs: a named window, or the terminal this process
-        # runs in.  A kitty binding passes @active-kitty-window-id, which means the same as
-        # no window at all.
-        medium, identifier = current_terminal()
-        if args.window and not args.window.startswith('@'):
-            identifier, medium = args.window, terminal_medium(args.window)
+    if args.action == 'window-target':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
         if not identifier:
-            return fail(f'sh2pil-open: {args.action} needs --window, or a terminal to run in')
-        if args.action == 'window-target':
-            return print_window_target(identifier, args.json, medium)
-        if args.action == 'window-session':
-            return print_window_session(identifier, args.harness, args.json, medium)
-        if args.action == 'window-menu':
-            return window_menu(identifier, args.emit_cmd, medium)
-        return paste_window(identifier, medium)
+            return fail('sh2pil-open: window-target needs --window, or a kitty window to run in')
+        return print_window_target(identifier, args.json)
+
+    if args.action == 'window-session':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('sh2pil-open: window-session needs --window, or a kitty window to run in')
+        return print_window_session(identifier, args.harness, args.json)
+
+    if args.action == 'window-menu':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('sh2pil-open: window-menu needs --window, or a kitty window to run in')
+        return window_menu(identifier, args.emit_cmd)
+
+    if args.action == 'paste-window':
+        identifier = args.window or os.environ.get('KITTY_WINDOW_ID', '')
+        if not identifier:
+            return fail('sh2pil-open: paste-window needs --window, or a kitty window to run in')
+        return paste_window(identifier)
 
     if args.action == 'session-remote-delete':
         try:
@@ -4271,11 +3881,6 @@ def retitle_session(identifier: str, name: str, emit: bool = False) -> int:
         ]
     elif window['medium'] == 'tmux':
         commands = [['tmux', 'rename-window', '-t', window['target'], title]]
-    elif window['medium'] == 'ghostty':
-        prefix = window.get('prefix') or ghostty_prefix()
-        if not prefix:
-            return 2
-        commands = [ghostty_action_argv(prefix, 'set_tab_title:' + title, window['target'])]
     else:
         return 2
 

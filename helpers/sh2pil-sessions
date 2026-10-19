@@ -47,10 +47,9 @@ still goes to stderr for a reader.  Without `--json` an empty read keeps its mes
 session looks the same whether it is read here or opened with f4 in its own
 window.
 
-`sh2pil-sessions last` is what the f3 and f4 bindings now call: it reads the session of the
-terminal window it is given -- a kitty window, or a Ghostty surface on macOS -- whichever
-store that window runs.  A window whose process names Claude Code or Codex is read from that
-store, and every other window is read as a Pi window, because Pi is
+`sh2pil-sessions last` is what the f3 and f4 bindings now call: it reads the session of the kitty window
+it is given, whichever store that window runs.  A window whose process names Claude Code or
+Codex is read from that store, and every other window is read as a Pi window, because Pi is
 the one store that publishes the session its window runs: the title names it.  Claude Code
 and Codex publish no such name, so their session is the newest one of that store whose
 recorded directory is the window's, which is the same rule `sh2pil-last` uses when a Pi title
@@ -990,114 +989,11 @@ def kitty_windows() -> list[dict]:
 
 
 def window_facts(identifier: str) -> dict:
-    """Return what the terminal knows about one window, or an empty mapping.
-
-    A kitty id is a number and a Ghostty id is a UUID, so the id says where to ask.  A
-    Ghostty surface carries no processes, which is why its `commands` list is empty: a
-    window that names no process is read as a Pi window, and one that runs a chat on a host
-    cannot be named here at all.
-    """
+    """Return what kitty knows about one window, or an empty mapping."""
     for window in kitty_windows():
         if window['id'] == str(identifier):
             return window
-    if '-' in str(identifier):
-        for window in ghostty_windows():
-            if window['id'] == str(identifier):
-                return window
     return {}
-
-
-GHOSTTY_LIST = """\
-function run() {
-  const app = Application('Ghostty');
-  const rows = [];
-  const wins = app.windows();
-  for (let wi = 0; wi < wins.length; wi++) {
-    const w = wins[wi];
-    const tabs = w.tabs();
-    for (let ti = 0; ti < tabs.length; ti++) {
-      const t = tabs[ti];
-      const terms = t.terminals();
-      for (let si = 0; si < terms.length; si++) {
-        const s = terms[si];
-        rows.push({ terminal: s.id(), name: s.name(), cwd: s.workingDirectory() });
-      }
-    }
-  }
-  return JSON.stringify(rows);
-}
-"""
-
-GHOSTTY_TIMEOUT = 10
-
-
-def ghostty_prefix() -> list[str] | None:
-    """Return the `osascript` argv that reaches a running Ghostty, or None.
-
-    The application is asked whether it is running, never told to do anything: a script that
-    would start it is the one thing this must not send.
-    """
-    if sys.platform != 'darwin' or not shutil.which('osascript'):
-        return None
-    try:
-        answer = subprocess.run(['osascript', '-e', 'application "Ghostty" is running'],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if answer.returncode != 0:
-        return None
-    if answer.stdout.decode('utf-8', 'replace').strip() != 'true':
-        return None
-    return ['osascript']
-
-
-def ghostty_windows() -> list[dict]:
-    """Return one entry per Ghostty surface: its id, its cwd, its title, no processes."""
-    prefix = ghostty_prefix()
-    if not prefix:
-        return []
-    try:
-        result = subprocess.run(prefix + ['-l', 'JavaScript', '-e', GHOSTTY_LIST],
-                                capture_output=True, timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        rows = json.loads(result.stdout.decode('utf-8', 'replace') or '[]')
-    except ValueError:
-        return []
-    if not isinstance(rows, list):
-        return []
-    windows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        identifier = row.get('terminal')
-        if not isinstance(identifier, str) or not identifier:
-            continue
-        windows.append({'id': identifier,
-                        'cwd': row['cwd'] if isinstance(row.get('cwd'), str) else '',
-                        'title': row['name'] if isinstance(row.get('name'), str) else '',
-                        'commands': []})
-    return windows
-
-
-def ghostty_front_terminal() -> str:
-    """Return the id of the Ghostty surface in front, or ''."""
-    prefix = ghostty_prefix()
-    if not prefix:
-        return ''
-    script = ('tell application "Ghostty" to get id of focused terminal of selected tab '
-              'of front window')
-    try:
-        result = subprocess.run(prefix + ['-e', script], capture_output=True,
-                                timeout=GHOSTTY_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return ''
-    if result.returncode != 0:
-        return ''
-    return result.stdout.decode('utf-8', 'replace').strip()
 
 
 def window_harness(commands: list[list[str]]) -> str:
@@ -1529,21 +1425,6 @@ def render_remote_session(source: dict[str, str], args: argparse.Namespace) -> i
         path.unlink(missing_ok=True)
 
 
-def terminal_identifier() -> str:
-    """Return the id of the terminal this process runs in, or ''.
-
-    A kitty child exports its window id.  Inside Ghostty the interface names the front
-    surface, which is this one while the reader is in it.  Inside a tmux pane neither
-    applies, and no window is named.
-    """
-    window = os.environ.get('KITTY_WINDOW_ID', '')
-    if window:
-        return window
-    if os.environ.get('TERM_PROGRAM') == 'ghostty':
-        return ghostty_front_terminal()
-    return ''
-
-
 def last_session(args: argparse.Namespace) -> int:
     """Show the transcript of the session the given window runs.
 
@@ -1555,7 +1436,7 @@ def last_session(args: argparse.Namespace) -> int:
     window's own command line names there, so it can differ from the store guessed here: on a
     host, this process sees only ssh.
     """
-    window = args.window or terminal_identifier()
+    window = args.window or os.environ.get('KITTY_WINDOW_ID', '')
     facts = window_facts(window) if window else {}
     harness = args.harness or window_harness(facts.get('commands', []))
     if harness not in ('pi', 'claude', 'codex'):
