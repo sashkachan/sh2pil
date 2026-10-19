@@ -333,12 +333,14 @@ class GhosttyOwnerTest(unittest.TestCase):
         self.assertIsNone(window)
         self.assertEqual(choices, 0)
 
-    def test_no_id_never_asks_ghostty(self):
+    def test_a_chat_with_no_exact_answer_has_no_owner(self):
         with patch.object(sh2pil_open, 'session_windows', return_value=[]), \
-                patch.object(sh2pil_open, 'ghostty_terminals') as ghostty:
-            window, _, _ = sh2pil_open.owner_window(self.entry())
+                patch.object(sh2pil_open, 'ghostty_terminals', return_value=[row()]) as ghostty, \
+                patch.object(sh2pil_open, 'ghostty_terminal_id', return_value=''):
+            window, _, choices = sh2pil_open.owner_window(self.entry())
         self.assertIsNone(window)
-        ghostty.assert_not_called()
+        self.assertEqual(choices, 0)
+        ghostty.assert_called_once()
 
 
 class CurrentTerminalTest(unittest.TestCase):
@@ -524,3 +526,253 @@ class GhosttyRetitleTest(unittest.TestCase):
                 patch('sys.stderr', new_callable=io.StringIO):
             self.assertEqual(sh2pil_open.retitle_session('abc', 'chat', emit=True), 0)
         self.assertIn('set_tab_title:chat', out.getvalue())
+
+
+class ProcessTableTest(unittest.TestCase):
+    """One call gives every parent and start time the owner walk needs."""
+
+    def test_the_table_reads_parents_and_start_times(self):
+        rows = (b'  100     1 Mon Oct 19 10:00:00 2026\n'
+                b'  101   100 Mon Oct 19 10:00:05 2026\n')
+        with patch.object(sh2pil_open.subprocess, 'run',
+                          return_value=result(stdout=rows)) as run:
+            table = sh2pil_open.process_table()
+        self.assertEqual(table[101], (100, 'Mon Oct 19 10:00:05 2026'))
+        self.assertEqual(run.call_args.args[0][:2], ['ps', '-eo'])
+
+    def test_a_failed_read_is_empty(self):
+        with patch.object(sh2pil_open.subprocess, 'run', return_value=result(code=1)):
+            self.assertEqual(sh2pil_open.process_table(), {})
+
+    def test_ancestors_walk_up_and_stop_at_init(self):
+        table = {5: (2, 'a'), 2: (1, 'b'), 1: (0, 'c')}
+        self.assertEqual(sh2pil_open.terminal_ancestors(5, table), [5, 2])
+
+
+class TerminalLinkTest(unittest.TestCase):
+    """Which surface a chat came from: a pid link, because the environment is not readable."""
+
+    TABLE = {700: (600, 'Mon Oct 19 12:00:00 2026'),
+             600: (500, 'Mon Oct 19 11:00:00 2026'),
+             500: (1, '')}
+
+    def links(self, files):
+        with tempfile.TemporaryDirectory() as directory:
+            pids = pathlib.Path(directory) / 'pids'
+            pids.mkdir()
+            for pid, text in files.items():
+                (pids / str(pid)).write_text(text, encoding='utf-8')
+            with patch.object(sh2pil_open, 'TERMINALS_DIR', pathlib.Path(directory)), \
+                    patch.object(sh2pil_open, 'process_table', return_value=self.TABLE):
+                return sh2pil_open.terminal_links()
+
+    def test_a_link_is_read(self):
+        self.assertEqual(self.links({600: 'AAA\tMon Oct 19 11:00:00 2026\n'}),
+                         {600: ('AAA', 'Mon Oct 19 11:00:00 2026')})
+
+    def test_a_link_for_a_dead_pid_is_dropped(self):
+        self.assertEqual(self.links({999: 'AAA\tMon Oct 19 11:00:00 2026\n'}), {})
+
+    def owner(self, files, pids):
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = pathlib.Path(directory)
+            (directory_path / 'pids').mkdir()
+            for pid, text in files.items():
+                (directory_path / 'pids' / str(pid)).write_text(text, encoding='utf-8')
+            with patch.object(sh2pil_open, 'TERMINALS_DIR', directory_path), \
+                    patch.object(sh2pil_open, 'process_table', return_value=self.TABLE):
+                return sh2pil_open.ghostty_terminal_id({'pids': pids})
+
+    def test_the_chat_walks_to_the_surface_it_was_started_in(self):
+        # 700 is the chat, 600 the shell the leaf became, and 600 holds the link.
+        self.assertEqual(self.owner({600: 'AAA\tMon Oct 19 11:00:00 2026\n'}, [700]), 'AAA')
+
+    def test_a_reused_pid_is_refused(self):
+        self.assertEqual(self.owner({600: 'AAA\tMon Oct 19 09:00:00 2026\n'}, [700]), '')
+
+    def test_no_link_is_no_terminal(self):
+        self.assertEqual(self.owner({}, [700]), '')
+
+    def test_a_link_is_written_for_the_running_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(sh2pil_open, 'TERMINALS_DIR', pathlib.Path(directory)):
+                sh2pil_open.write_terminal_link(4242, 'AAA', 'Mon Oct 19 12:00:00 2026')
+            written = (pathlib.Path(directory) / 'pids' / '4242').read_text()
+        self.assertEqual(written.split('\t')[0], 'AAA')
+
+class TerminalLeafTest(unittest.TestCase):
+    """The marker a new surface waits for, and the command it then becomes."""
+
+    def test_the_marker_is_read_and_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token = 'a' * 16
+            path = pathlib.Path(directory) / token
+            path.write_text('AAA-BBB\n', encoding='utf-8')
+            with patch.object(sh2pil_open, 'TERMINALS_DIR', pathlib.Path(directory)):
+                self.assertEqual(sh2pil_open.terminal_marker(token), 'AAA-BBB')
+            self.assertFalse(path.exists())
+
+    def test_a_missing_marker_costs_only_the_wait(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(sh2pil_open, 'TERMINALS_DIR', pathlib.Path(directory)), \
+                patch.object(sh2pil_open, 'TERMINAL_WAIT', 0):
+            self.assertEqual(sh2pil_open.terminal_marker('b' * 16), '')
+
+    def test_the_command_wraps_the_real_one(self):
+        argv = sh2pil_open.terminal_leaf_argv('c' * 16, ['/bin/zsh', '-lic', 'pi'])
+        self.assertIn('terminal-leaf', argv)
+        self.assertEqual(argv[3:5], ['c' * 16, '--'])
+        self.assertEqual(argv[5:], ['/bin/zsh', '-lic', 'pi'])
+
+    def test_a_bad_token_never_runs_the_command(self):
+        with patch.object(sh2pil_open, 'fail', return_value=1) as failed, \
+                patch.object(sh2pil_open, 'terminal_marker') as marker:
+            self.assertEqual(sh2pil_open.terminal_leaf('../escape', ['/bin/true']), 1)
+        self.assertIn('token', failed.call_args.args[0])
+        marker.assert_not_called()
+
+    def test_a_leaf_without_a_command_is_refused(self):
+        with patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.terminal_leaf('d' * 16, []), 1)
+        self.assertIn('command', failed.call_args.args[0])
+
+
+class TerminalMarkerWriteTest(unittest.TestCase):
+    """The creating side: the marker is written while the surface is still starting."""
+
+    def test_the_created_surface_is_marked_before_the_label_is_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(sh2pil_open, 'TERMINALS_DIR', pathlib.Path(directory)), \
+                    patch.object(sh2pil_open, 'ghostty_prefix', return_value=['osascript']), \
+                    patch.object(sh2pil_open.subprocess, 'run',
+                                 return_value=result(stdout=b'AAA-BBB\n')) as run:
+                self.assertEqual(sh2pil_open.ghostty_launch(['pi'], '/tmp', 'chat', 'tab'), 0)
+            script = run.call_args.args[0][2]
+            # The marker line comes before the title action: the surface, and the leaf in it,
+            # start before the AppleScript answer arrives.
+            self.assertLess(script.index('do shell script'), script.index('set_tab_title'))
+            self.assertIn(str(pathlib.Path(directory)), script)
+            self.assertIn('terminal-leaf', script)
+            token = script.split('terminal-leaf ')[1].split(' --')[0]
+            self.assertIn(token, script)
+
+    def test_a_refused_launch_reports_the_permission(self):
+        with patch.object(sh2pil_open, 'ghostty_prefix', return_value=['osascript']), \
+                patch.object(sh2pil_open, 'note_failure'), \
+                patch.object(sh2pil_open.subprocess, 'run',
+                             return_value=result(code=1, stderr=b'-1743')) as run, \
+                patch('sys.stderr', new_callable=io.StringIO) as err:
+            self.assertEqual(sh2pil_open.ghostty_launch(['pi'], '/tmp', '', 'tab'), 1)
+        self.assertIn('Automation', err.getvalue())
+
+    def test_no_state_directory_means_no_marker_not_no_launch(self):
+        with patch.object(sh2pil_open, 'TERMINALS_DIR',
+                          pathlib.Path('/nonexistent/definitely/not/here')), \
+                patch.object(sh2pil_open, 'ghostty_prefix', return_value=['osascript']), \
+                patch.object(sh2pil_open.subprocess, 'run',
+                             return_value=result(stdout=b'AAA-BBB\n')) as run:
+            self.assertEqual(sh2pil_open.ghostty_launch(['pi'], '/tmp', '', 'tab'), 0)
+        self.assertNotIn('do shell script', run.call_args.args[0][2])
+
+
+class GhosttyOwnerLinkTest(unittest.TestCase):
+    """The owner answer: the link first, then one unique title, and nothing else."""
+
+    def entry(self, name='chat', pids=(1,)):
+        return {'id': 'abc', 'pids': list(pids), 'cwd': '/Users/me/proj', 'name': name}
+
+    def owner(self, rows, terminal='', name='chat'):
+        with patch.object(sh2pil_open, 'ghostty_terminals', return_value=rows), \
+                patch.object(sh2pil_open, 'ghostty_terminal_id', return_value=terminal):
+            return sh2pil_open.ghostty_owner(self.entry(name=name), rows)
+
+    def test_the_marker_names_the_terminal(self):
+        found_row, reason, choices = self.owner([row()], terminal='AAA-BBB')
+        self.assertIsNotNone(found_row)
+        self.assertIn('carries the id', reason)
+
+    def test_one_matching_title_is_enough(self):
+        found = [row(identifier='AAA', name='π - chat - proj')]
+        found_row, reason, choices = self.owner(found)
+        self.assertIsNotNone(found_row)
+        self.assertIn('title', reason)
+
+    def test_two_matching_titles_are_no_match(self):
+        found = [row(identifier='AAA', name='π - chat - a'),
+                 row(identifier='BBB', name='π - chat - b')]
+        found_row, reason, choices = self.owner(found)
+        self.assertIsNone(found_row)
+        self.assertEqual(choices, 2)
+
+    def test_a_chat_with_no_name_is_never_matched_by_title(self):
+        found_row, _, choices = self.owner([row(name='π - other - proj')], name='')
+        self.assertIsNone(found_row)
+        self.assertEqual(choices, 0)
+
+    def test_the_link_beats_a_title(self):
+        found = [row(identifier='AAA', name='π - chat - one'),
+                 row(identifier='BBB', name='π - chat - two')]
+        found_row, reason, _ = self.owner(found, terminal='BBB')
+        self.assertEqual(found_row['target'], 'BBB')
+        self.assertIn('carries the id', reason)
+
+    def test_a_marker_for_a_surface_that_is_gone_falls_through(self):
+        found_row, _, _ = self.owner([row(identifier='AAA', name='π - chat - one')],
+                               {'SH2PIL_TERMINAL_ID': 'GONE'})
+        self.assertEqual(found_row['target'], 'AAA')
+
+
+class OwnerWindowGhosttyTest(unittest.TestCase):
+    """focus, switch, and retitle use the same rule as the owner column."""
+
+    def entry(self, name='chat'):
+        return {'id': 'abc', 'pids': [1], 'cwd': '/Users/me/proj', 'name': name}
+
+    def test_the_marker_places_the_window_without_a_pid(self):
+        with patch.object(sh2pil_open, 'session_windows', return_value=[]), \
+                patch.object(sh2pil_open, 'ghostty_terminals', return_value=[row()]), \
+                patch.object(sh2pil_open, 'ghostty_terminal_id', return_value='AAA-BBB'):
+            window, reason, choices = sh2pil_open.owner_window(self.entry())
+        self.assertEqual(window['medium'], 'ghostty')
+        self.assertIn('carries the id', reason)
+
+    def test_a_unique_title_places_the_window(self):
+        with patch.object(sh2pil_open, 'session_windows', return_value=[]), \
+                patch.object(sh2pil_open, 'ghostty_terminals',
+                             return_value=[row(name='π - chat - proj')]), \
+                patch.object(sh2pil_open, 'ghostty_terminal_id', return_value=''):
+            window, reason, _ = sh2pil_open.owner_window(self.entry())
+        self.assertIsNotNone(window)
+        self.assertIn('title', reason)
+
+    def test_an_ambiguous_title_places_nothing(self):
+        rows = [row(identifier='AAA', name='π - chat - a'),
+                row(identifier='BBB', name='π - chat - b')]
+        with patch.object(sh2pil_open, 'session_windows', return_value=[]), \
+                patch.object(sh2pil_open, 'ghostty_terminals', return_value=rows), \
+                patch.object(sh2pil_open, 'ghostty_terminal_id', return_value=''):
+            window, _, choices = sh2pil_open.owner_window(self.entry())
+        self.assertIsNone(window)
+        self.assertEqual(choices, 2)
+
+
+class ZmxExactLinkTest(unittest.TestCase):
+    """The marker survives a window that has moved on, because zmx records it at session start."""
+
+    def run_with(self, terminal_id, rows):
+        def fake_run(arguments):
+            if arguments[:1] != ['print-env']:
+                return ''
+            return terminal_id + '\n' if arguments[-1] == 'SH2PIL_TERMINAL_ID' else ''
+        with patch.object(sh2pil_open, 'zmx_run', side_effect=fake_run), \
+                patch.object(sh2pil_open, 'ghostty_terminals', return_value=rows):
+            return sh2pil_open.zmx_client_window('pi-abc')
+
+    def test_a_recorded_marker_names_the_surface(self):
+        window = self.run_with('AAA-BBB', [row()])
+        self.assertIsNotNone(window)
+        self.assertEqual(window['target'], 'AAA-BBB')
+        self.assertIn('zmx pi-abc', window['label'])
+
+    def test_a_surface_that_is_gone_is_not_focused(self):
+        self.assertIsNone(self.run_with('AAA-BBB', []))
