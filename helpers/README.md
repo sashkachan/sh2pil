@@ -208,6 +208,11 @@ What Ghostty supports, and what it cannot:
    owns that surface until it exits. A macOS hotkey that runs the same command is the
    alternative.
 
+Ghostty accepts the OSC 9 sequence that `notify: terminal` sends and hands it to the macOS
+notification centre, and it answers the focus report the picker uses to stay quiet while it is in
+front. Whether a banner appears is Ghostty's own permission in **System Settings › Notifications**;
+without it nothing is shown. `notify: bell` always shows something, because the tab lights up.
+
 ## tmux
 
 Bind a key to the picker in a popup:
