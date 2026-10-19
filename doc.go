@@ -262,7 +262,7 @@
 //	           (on another host, a new chat in that remote project)
 //	ctrl+b     cycle the store a new chat uses, over the stores the target on screen has
 //	           (the list itself shows every configured store at once)
-//	ctrl+t     an extra kitty OS window; on a group header, open a shell there, and on a row
+//	ctrl+t     an extra OS window; on a group header, open a shell there, and on a row
 //	           that runs in a zmx session, attach or add a client
 //	ctrl+x     a login shell in the project (on a host's row, on that host)
 //	ctrl+g     lazygit at the top of the repository (on a host's row, on that host)
@@ -312,6 +312,6 @@
 // the list's project-ignore or delete action, and alt+f moves by a word instead of opening yazi.
 //
 // The helpers are scripts, so they are named with the interpreter that built this binary
-// (see the build script in the chezmoi source): a kitty key-binding child has a minimal
+// (see the build script in the chezmoi source): a key-binding child has a minimal
 // PATH, where /opt/homebrew/bin is absent.
 package main
