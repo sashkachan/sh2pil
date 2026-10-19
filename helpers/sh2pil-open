@@ -1876,6 +1876,42 @@ def session_remote_list(server: str, harness: str, live: bool = False) -> list[d
     return [row for row in rows if isinstance(row, dict) and row.get('id')]
 
 
+def session_remote_editor(server: str, identifier: str, harness: str, remote_file: str,
+                          editor: str, emit: bool = False) -> int:
+    """Read a transcript from another host and open it the way the local editor verb does.
+
+    The bytes travel, not a rendering, so this machine's own reader renders them and the host
+    needs nothing installed.  The file is written under the temporary directory and removed
+    when the editor exits: the host's path means nothing here, which is why the read happens
+    instead of handing that path to a local reader.
+    """
+    if not str(remote_file).startswith('/'):
+        return fail(f'sh2pil-open: {server} reported no transcript path for {identifier}')
+    if emit:
+        print(shlex.join(['sh2pil-open', 'session-remote-editor', server, identifier,
+                          '--harness', harness, '--file', remote_file, '--editor', editor]))
+        return 0
+    try:
+        data = session_remote_file(server, remote_file)
+    except subprocess.TimeoutExpired:
+        return fail(f'sh2pil-open: reading {remote_file} on {server} timed out')
+    except (OSError, RuntimeError, ValueError) as error:
+        return fail(f'sh2pil-open: could not read {remote_file} on {server}: {error}')
+    directory = pathlib.Path(tempfile.mkdtemp(prefix='sh2pil-remote-'))
+    path = directory / pathlib.Path(remote_file).name
+    try:
+        path.write_bytes(data)
+        if harness == 'pi':
+            command = [sys.executable, str(sh2pil_last()), '--session', str(path), '--full',
+                       '--nvim', editor]
+        else:
+            command = [sys.executable, str(sessions_helper()), 'show', str(path),
+                       '--harness', harness, '--nvim', editor]
+        return subprocess.run(command, check=False).returncode
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def session_remote_show(server: str, identifier: str, harness: str, tail: int,
                         path: str = '') -> str:
     """Read the end of one remote transcript, rendered on the host that holds it.
@@ -4050,6 +4086,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remote_session_file.add_argument('server', help='SSH config alias or user@host')
     remote_session_file.add_argument('file', help='the absolute transcript path on that host')
 
+    remote_session_editing = commands.add_parser(
+        'session-remote-editor',
+        help="read a transcript from another host and open it in the editor here")
+    remote_session_editing.add_argument('server', help='SSH config alias or user@host')
+    remote_session_editing.add_argument('session', help='session id on the remote host')
+    remote_session_editing.add_argument('--harness', choices=SESSION_HARNESSES, default='pi',
+                                        help='store to read (default: %(default)s)')
+    remote_session_editing.add_argument('--file', default='',
+                                        help='the transcript path that host reported')
+    remote_session_editing.add_argument('--editor',
+                                        default=os.environ.get('EDITOR') or DEFAULT_EDITOR,
+                                        help='editor to open (default: %(default)s)')
+    remote_session_editing.add_argument('--emit-cmd', action='store_true',
+                                        help='print the command instead of running it')
+
     remote_session_opening = commands.add_parser(
         'session-remote-open',
         help='open a terminal on a session at another host, in a zmx session there when the'
@@ -4379,6 +4430,10 @@ def main(argv: list[str]) -> int:
             return fail(f'sh2pil-open: could not read {args.file} on {args.server}: {error}')
         write_bytes(data)
         return 0
+
+    if args.action == 'session-remote-editor':
+        return session_remote_editor(args.server, args.session, args.harness, args.file,
+                                     args.editor, args.emit_cmd)
 
     if args.action == 'session-remote-open':
         return session_remote_open(args.server, args.cwd, args.session, args.harness,

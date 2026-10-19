@@ -89,11 +89,22 @@ func TestRemoteSessionActionsReachOneVerb(t *testing.T) {
 			"--harness", "pi", "--place", "window"}},
 		{"new", []string{"session-remote-open", row.Server, row.CWD,
 			"--harness", "pi", "--place", "tab"}},
+		// The transcript is on the host, so the editor fetches it and renders it here.
+		{"editor", []string{"session-remote-editor", row.Server, row.ID,
+			"--harness", "pi", "--editor", "", "--file", row.File}},
 	}
 	for _, test := range cases {
 		args, note := m.openArgs(test.action, row, false)
 		if strings.Join(args, "\x00") != strings.Join(test.want, "\x00") {
 			t.Errorf("%s args = %#v, want %#v", test.action, args, test.want)
+		}
+		// The editor reads the transcript over the connection and renders it here, so its
+		// note is the same one a local transcript closes with.
+		if test.action == "editor" {
+			if note != "closed the transcript view" {
+				t.Errorf("editor note = %q, want the transcript note", note)
+			}
+			continue
 		}
 		if !strings.Contains(note, row.Server) {
 			t.Errorf("%s note = %q, want the host it opens on", test.action, note)

@@ -2348,3 +2348,71 @@ class LoginShellTest(unittest.TestCase):
     def test_the_resolved_shell_is_installed(self):
         # SHELL is resolved once, at import, and the launchers use it directly.
         self.assertTrue(os.access(sh2pil_open.SHELL, os.X_OK))
+
+
+class SessionRemoteEditorTest(unittest.TestCase):
+    """A remote transcript is read over the connection and rendered on this machine."""
+
+    def run_editor(self, harness='pi', editor='vim', remote_file='/srv/api/store/a.jsonl'):
+        payload = b'{"type":"session"}\n{"type":"message"}\n'
+        seen = []
+
+        def fake_run(command, **kwargs):
+            if '--session' in command:
+                path = pathlib.Path(command[command.index('--session') + 1])
+            elif 'show' in command:
+                path = pathlib.Path(command[command.index('show') + 1])
+            else:
+                path = None
+            if path is not None:
+                seen.append((list(command), path.read_bytes() if path.exists() else None))
+            return sh2pil_open.subprocess.CompletedProcess(command, 0, b'', b'')
+
+        with patch.object(sh2pil_open, 'session_remote_file', return_value=payload), \
+                patch.object(sh2pil_open.subprocess, 'run', side_effect=fake_run):
+            code = sh2pil_open.session_remote_editor('build-host', 'aaa', harness,
+                                                     remote_file, editor)
+        return code, seen
+
+    def test_the_bytes_travel_and_the_local_reader_opens_them(self):
+        code, seen = self.run_editor()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1)
+        command, content = seen[0]
+        self.assertEqual(content, b'{"type":"session"}\n{"type":"message"}\n')
+        self.assertIn('--full', command)
+        self.assertEqual(command[command.index('--nvim') + 1], 'vim')
+
+    def test_the_copy_is_removed_when_the_reader_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'a.jsonl'
+            with patch.object(sh2pil_open, 'session_remote_file', return_value=b'x'), \
+                    patch.object(sh2pil_open.tempfile, 'mkdtemp', return_value=directory), \
+                    patch.object(sh2pil_open.subprocess, 'run',
+                                 return_value=sh2pil_open.subprocess.CompletedProcess([], 0)):
+                sh2pil_open.session_remote_editor('build-host', 'aaa', 'pi',
+                                                  '/srv/a.jsonl', 'vim')
+            self.assertFalse(path.exists())
+
+    def test_another_store_is_shown_by_its_own_reader(self):
+        code, seen = self.run_editor(harness='claude')
+        self.assertEqual(code, 0)
+        command, _ = seen[0]
+        self.assertIn('show', command)
+        self.assertEqual(command[command.index('--harness') + 1], 'claude')
+
+    def test_a_host_that_reports_no_path_is_refused_before_any_read(self):
+        with patch.object(sh2pil_open, 'session_remote_file') as read, \
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.session_remote_editor('build-host', 'aaa', 'pi',
+                                                               '', 'vim'), 1)
+        read.assert_not_called()
+        self.assertIn('no transcript path', failed.call_args.args[0])
+
+    def test_a_read_that_fails_is_reported_with_the_host(self):
+        with patch.object(sh2pil_open, 'session_remote_file',
+                          side_effect=RuntimeError('cat: no such file')), \
+                patch.object(sh2pil_open, 'fail', return_value=1) as failed:
+            self.assertEqual(sh2pil_open.session_remote_editor('build-host', 'aaa', 'pi',
+                                                               '/srv/a.jsonl', 'vim'), 1)
+        self.assertIn('build-host', failed.call_args.args[0])

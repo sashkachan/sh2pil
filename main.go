@@ -2458,7 +2458,7 @@ func (m *model) runAction(name string, session session, force bool) tea.Cmd {
 		}
 	}
 	helper := "sh2pil-open"
-	if name == "editor" && harnessOf(session) != "pi" {
+	if name == "editor" && session.Server == "" && harnessOf(session) != "pi" {
 		helper = "sh2pil-sessions"
 	}
 	command := m.helper(helper, args...)
@@ -2701,6 +2701,16 @@ func (m *model) openArgsFor(action string, session session, force bool) ([]strin
 		// The file browser is a setting too, and it opens at the project directory itself.
 		return m.runToolArgs(m.fileBrowser, defaultFileBrowser, cwd, place)
 	case "editor":
+		// The transcript lives on its own host, so nothing here may hand that path to a local
+		// reader: the bytes are fetched and this machine's reader renders them.
+		if session.Server != "" {
+			args := []string{"session-remote-editor", session.Server, session.ID,
+				"--harness", harnessOf(session), "--editor", m.editor}
+			if session.File != "" {
+				args = append(args, "--file", session.File)
+			}
+			return args, "closed the transcript view"
+		}
 		if harnessOf(session) != "pi" {
 			return []string{"show", "--harness", harnessOf(session), session.ID,
 				"--nvim", m.editor}, "closed the transcript view"
