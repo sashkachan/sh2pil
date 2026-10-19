@@ -5,8 +5,7 @@ sessions. It lists the sessions of one machine or of an SSH host, groups them by
 shows the tail of the highlighted transcript beside the list, and resumes, forks, deletes, or
 opens a new one.
 
-It is the Bubble Tea UI that a terminal key binding opens. Kitty's `Cmd+B` is the usual
-one; inside Ghostty the same key types the command.
+It is the Bubble Tea UI that a terminal key binding opens. Kitty's `Cmd+B` is the usual one.
 
 The picker owns no store logic. It reads its rows and transcripts from the `sh2pil-sessions` helper, and
 every terminal action — resume, new, fork, a shell, an editor, a zmx session — from the
@@ -98,8 +97,7 @@ header or on the row rather than failing the read.
 | **git** | the lazygit action | `/usr/bin/git`, then `PATH`; used to find the repository root. |
 | **ssh** | remote targets | A master on `~/.ssh/agent.sock` is reused, and is shared with plain `ssh` when `ssh_config` points `ControlPath` at it. |
 | **kitty** | the overlay bindings | `kitten`, which ships with kitty, does the window lookup and remote control. |
-| **Ghostty** | the terminals on macOS | From 1.3.0 on, through AppleScript, gated by the Automation permission; the key binding types a command instead of drawing an overlay. |
-| **tmux** | the fallback terminal | Used when no terminal app can be reached, and for panes inside it. |
+| **tmux** | the fallback terminal | Used when kitty cannot be reached, and for panes inside it. |
 | **nvim** | the transcript and editor actions | The `tools.editor` setting or `$EDITOR` replaces it. |
 | **lazygit**, **yazi** | two travel actions | The `tools.file_browser` and `tools.git_tool` settings replace them; absent tools are reported and skipped. |
 | **mise** | *not required* | Only one more place to find `zmx`: `~/.local/share/mise/shims/zmx` is tried after `PATH`, locally and on a remote host. `zmx_remote_binary` can name it explicitly. |
@@ -163,10 +161,6 @@ See [`helpers/README.md`](helpers/README.md) for the key bindings of each termin
 
 - **kitty** — `Cmd+B` opens the picker as an overlay; `f3`/`f4` read the session of the
   window they are pressed in; `Cmd+.` opens the picker's action menu for that window.
-- **Ghostty** — the same keys type the command instead, so the picker runs in that tab. There
-  is no overlay, a surface carries no pid, and a window running `ssh` is refused rather than
-  place a menu on a local project. See [`helpers/README.md`](helpers/README.md#ghostty) for the
-  binding and the limits.
 - **tmux** — bind a key to `sh2pil` and run it in a popup.
 - **plain shell** — run `sh2pil` directly.
 
