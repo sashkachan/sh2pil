@@ -3541,12 +3541,20 @@ def kitten_prefix() -> list[str] | None:
     Inside kitty the controlling terminal answers `kitten @ ls` with no KITTY_*
     variables at all.  Outside kitty (a tmux pane, a desktop launcher), the newest
     remote-control socket in /tmp that answers `ls` is used.
+
+    Under Ghostty that first probe is skipped.  It asks the terminal on the far side
+    of this process's own stdin for an answer, and while it runs it consumes the input
+    the picker is reading: keys arrive at the picker late or not at all, and navigation
+    looks broken even though the picker receives them and builds frames.  The socket
+    search below still runs, so a kitty that is also open is still found, which is why
+    a session in a kitty window can still be placed from Ghostty.
     """
-    try:
-        if subprocess.run(['kitten', '@', 'ls'], capture_output=True).returncode == 0:
-            return ['kitten', '@']
-    except OSError:
-        return None
+    if not inside_ghostty():
+        try:
+            if subprocess.run(['kitten', '@', 'ls'], capture_output=True).returncode == 0:
+                return ['kitten', '@']
+        except OSError:
+            return None
     try:
         sockets = sorted(pathlib.Path('/tmp').glob('kitty-*'),
                          key=lambda path: path.stat().st_mtime, reverse=True)

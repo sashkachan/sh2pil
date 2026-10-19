@@ -776,3 +776,35 @@ class ZmxExactLinkTest(unittest.TestCase):
 
     def test_a_surface_that_is_gone_is_not_focused(self):
         self.assertIsNone(self.run_with('AAA-BBB', []))
+
+
+class KittenPrefixTest(unittest.TestCase):
+    """The kitty probe reads this terminal's own input, so Ghostty is never probed."""
+
+    def test_a_ghostty_terminal_is_never_probed(self):
+        with patch.dict(sh2pil_open.os.environ, {'TERM_PROGRAM': 'ghostty'}, clear=True), \
+                patch.object(sh2pil_open.subprocess, 'run') as run, \
+                patch.object(sh2pil_open.pathlib.Path, 'glob', return_value=[]):
+            self.assertIsNone(sh2pil_open.kitten_prefix())
+        run.assert_not_called()
+
+    def test_a_kitty_socket_is_still_used_under_ghostty(self):
+        # A real file, because the socket list is sorted by mtime.
+        with tempfile.TemporaryDirectory() as directory:
+            socket = pathlib.Path(directory) / 'kitty-123'
+            socket.write_text('', encoding='utf-8')
+            with patch.dict(sh2pil_open.os.environ, {'TERM_PROGRAM': 'ghostty'}, clear=True), \
+                    patch.object(sh2pil_open.pathlib.Path, 'glob',
+                                 return_value=[socket]), \
+                    patch.object(sh2pil_open.subprocess, 'run', return_value=result()) as run:
+                self.assertEqual(sh2pil_open.kitten_prefix(),
+                                 ['kitten', '@', '--to', f'unix:{socket}'])
+            self.assertEqual(run.call_args.args[0],
+                             ['kitten', '@', '--to', f'unix:{socket}', 'ls'])
+
+    def test_elsewhere_the_controlling_terminal_is_probed(self):
+        with patch.dict(sh2pil_open.os.environ, {'TERM_PROGRAM': 'xterm-kitty'}, clear=True), \
+                patch.object(sh2pil_open.subprocess, 'run', return_value=result()) as run, \
+                patch.object(sh2pil_open.pathlib.Path, 'glob', return_value=[]):
+            self.assertEqual(sh2pil_open.kitten_prefix(), ['kitten', '@'])
+        self.assertEqual(run.call_args.args[0], ['kitten', '@', 'ls'])

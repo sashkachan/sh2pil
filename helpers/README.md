@@ -178,10 +178,6 @@ bindings type one:
 # cmd+b = the session picker, in a new tab of the running instance.
 keybind = super+b=text:"$PREFIX/bin/sh2pil --nvim $NVIM\n"
 
-# f3 and f4 = the transcript of the surface the key was pressed in.
-keybind = f3=text:"$PREFIX/bin/sh2pil-sessions last --nvim $NVIM\n"
-keybind = f4=text:"$PREFIX/bin/sh2pil-sessions last --full --nvim $NVIM\n"
-
 # cmd+. = the picker's action menu for that surface.
 keybind = super+.=text:"$PREFIX/bin/sh2pil-open window-menu\n"
 
@@ -192,6 +188,12 @@ keybind = super+alt+v=text:"$PREFIX/bin/python3 $PREFIX/bin/sh2pil-open paste-wi
 
 No binding passes `--window`: with no window argument the helpers take the front Ghostty
 surface, which is the surface the binding ran in while it is frontmost.
+
+**f3 and f4 have no binding here.** A Ghostty binding types its command into whatever is
+running, so pressing `f3` inside a chat would type `sh2pil-sessions last` into that chat's
+prompt instead of opening a transcript. Use the picker's preview, or type the command at a
+shell prompt. The same rule applies to the two bindings above: press them at a prompt, not
+inside a chat.
 
 What Ghostty supports, and what it cannot:
 
@@ -205,8 +207,9 @@ What Ghostty supports, and what it cannot:
 4. **A surface running `ssh` cannot be placed.** Without a command line its host is unknown, so
    `cmd+.` and `f3`/`f4` refuse it in one line instead of reading a local project by mistake.
 5. A key binding types a command rather than the picker drawing over the surface, so the picker
-   owns that surface until it exits. A macOS hotkey that runs the same command is the
-   alternative.
+   owns that surface until it exits, and a key pressed inside a chat types into that chat
+   instead. That is why `f3` and `f4` are not bound at all here. A macOS hotkey that runs the
+   same command is the alternative.
 
 Ghostty accepts the OSC 9 sequence that `notify: terminal` sends and hands it to the macOS
 notification centre, and it answers the focus report the picker uses to stay quiet while it is in
