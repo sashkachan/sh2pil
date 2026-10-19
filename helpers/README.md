@@ -163,6 +163,51 @@ map kitty_mod+. launch --allow-remote-control --type=overlay $PREFIX/bin/sh2pil-
 environment of its own and the picker opens tabs and windows. `--type=overlay` draws the
 picker over the current window.
 
+## Ghostty
+
+Ghostty answers AppleScript from **1.3.0 on, macOS only**. The first terminal action asks for
+the macOS Automation permission; until it is granted, the action prints the command instead of
+running it. `macos-applescript = false` turns the interface off, and then Ghostty is not a
+medium. Linux stays on the tmux-or-print path: `ghostty +new-window` opens one window and
+nothing else.
+
+A Ghostty key binding runs an action, and there is no action that runs a command, so these
+bindings type one:
+
+```conf
+# cmd+b = the session picker, in a new tab of the running instance.
+keybind = super+b=text:"$PREFIX/bin/sh2pil --nvim $NVIM\n"
+
+# f3 and f4 = the transcript of the surface the key was pressed in.
+keybind = f3=text:"$PREFIX/bin/sh2pil-sessions last --nvim $NVIM\n"
+keybind = f4=text:"$PREFIX/bin/sh2pil-sessions last --full --nvim $NVIM\n"
+
+# cmd+. = the picker's action menu for that surface.
+keybind = super+.=text:"$PREFIX/bin/sh2pil-open window-menu\n"
+
+# cmd+alt+v = put this machine's clipboard image where the chat in that surface can read it.
+# cmd+shift+v is Ghostty's own paste_from_selection, so it is not used here.
+keybind = super+alt+v=text:"$PREFIX/bin/python3 $PREFIX/bin/sh2pil-open paste-window\n"
+```
+
+No binding passes `--window`: with no window argument the helpers take the front Ghostty
+surface, which is the surface the binding ran in while it is frontmost.
+
+What Ghostty supports, and what it cannot:
+
+1. **There is no overlay.** The picker runs in a tab, a split, or the quick terminal, and
+   `--place current` runs the chosen action in that same surface.
+2. **AppleScript is macOS only** and needs 1.3.0 or newer. It is gated by the Automation
+   permission, and can be switched off with `macos-applescript = false`.
+3. **A surface reports no pid, no tty, and no command line.** A chat is matched to a surface by
+   the id `sh2pil-open` records when it opens that surface, or by one unique title. `alt+l`
+   therefore keeps fewer rows in Ghostty than in kitty.
+4. **A surface running `ssh` cannot be placed.** Without a command line its host is unknown, so
+   `cmd+.` and `f3`/`f4` refuse it in one line instead of reading a local project by mistake.
+5. A key binding types a command rather than the picker drawing over the surface, so the picker
+   owns that surface until it exits. A macOS hotkey that runs the same command is the
+   alternative.
+
 ## tmux
 
 Bind a key to the picker in a popup:

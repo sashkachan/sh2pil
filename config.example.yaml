@@ -54,6 +54,9 @@ attention_sort: true
 # What the picker does when a chat starts waiting for you while it is open: `terminal` raises a
 # desktop notification (OSC 9), `bell` rings the terminal bell (kitty is configured with
 # enable_audio_bell off, so it lights the tab instead of making a noise), and `off` stays silent.
+# Ghostty reads OSC 9 and hands it to the macOS notification centre, and it answers the focus
+# report (DECSET 1004) the picker uses to stay quiet while it is in front, so `terminal` works
+# there too: whether a banner appears is the system notification setting.
 # A notification names a project and a state and nothing else -- never a prompt, a tool argument, a
 # path, or a transcript excerpt -- and one is raised per read, so a burst of chats that start
 # waiting together makes one message.  It is for a reader who is not looking at the picker, so a
