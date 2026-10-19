@@ -723,7 +723,11 @@ class ZmxSessionsTest(unittest.TestCase):
 
     def test_the_window_comes_from_the_label_and_the_tracked_window_id(self):
         def fake_run(arguments):
-            return '60\n' if arguments[0] == 'print-env' else ''
+            # The exact marker is asked for first, then the kitty window the session was
+            # started in: these sessions recorded no marker.
+            if arguments[:1] != ['print-env']:
+                return ''
+            return '60\n' if arguments[-1] == 'KITTY_WINDOW_ID' else ''
         windows = [{'target': '60', 'label': 'kitty window 60', 'pids': [9]},
                    {'target': '61', 'label': 'kitty window 61', 'pids': [10]}]
         with (patch.object(sh2pil_open, 'zmx_pi_sessions', return_value={'aaa': 'chezmoi'}),
@@ -738,7 +742,11 @@ class ZmxSessionsTest(unittest.TestCase):
 
     def test_the_window_must_still_hold_a_client_for_that_session(self):
         def fake_run(arguments):
-            return '60\n' if arguments[0] == 'print-env' else ''
+            # The exact marker is asked for first, then the kitty window the session was
+            # started in: these sessions recorded no marker.
+            if arguments[:1] != ['print-env']:
+                return ''
+            return '60\n' if arguments[-1] == 'KITTY_WINDOW_ID' else ''
         attached = [{'target': '60', 'label': 'kitty window 60', 'pids': [9],
                      'commands': [['/bin/zsh'], ['/bin/zmx', 'attach', 'pi-abc']]}]
         elsewhere = [{'target': '60', 'label': 'kitty window 60', 'pids': [9],
