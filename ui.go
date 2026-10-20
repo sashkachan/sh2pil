@@ -13,35 +13,37 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Colours use the small ANSI palette indexes (6 cyan, 2 green, 3 yellow, 1 red, 8 dim
-// grey) so the terminal theme keeps deciding the look, with an adaptive selected-row
-// background that stays subtle on light terminals and clear on dark terminals.
+// themeColor selects a readable color for the detected light or dark system appearance.
+// prepareTerminal sets COLORFGBG before Bubble Tea starts, so Lip Gloss can resolve these
+// adaptive colors without querying the terminal input stream.
+func themeColor(light, dark string) lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
+}
+
 var (
-	dimSty    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	accentSty = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	liveSty   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	dimSty    = lipgloss.NewStyle().Foreground(themeColor("#666666", "#999999"))
+	accentSty = lipgloss.NewStyle().Foreground(themeColor("#005f87", "#5fd7ff"))
+	liveSty   = lipgloss.NewStyle().Foreground(themeColor("#008700", "#5fd787"))
 	// A chat that is waiting on a person is the one row a reader must not have to look for, so it
 	// is the only state the picker colours apart from the rest.
-	waitSty  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	warnSty  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	goneSty  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	matchSty = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	waitSty  = lipgloss.NewStyle().Foreground(themeColor("#875f00", "#ffd75f")).Bold(true)
+	warnSty  = lipgloss.NewStyle().Foreground(themeColor("#875f00", "#ffd75f"))
+	goneSty  = lipgloss.NewStyle().Foreground(themeColor("#af0000", "#ff5f5f"))
+	matchSty = lipgloss.NewStyle().Foreground(themeColor("#005f87", "#5fd7ff")).Bold(true)
 	// filterSty marks the query that is narrowing the list, so an active filter is not taken
-	// for an empty target.  The background is adaptive, so the chip reads on light and dark.
+	// for an empty target. The contrasting background keeps the chip readable in both themes.
 	filterSty = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("6")).
-			Background(lipgloss.AdaptiveColor{Light: "#d0d0d0", Dark: "#3a3a3a"})
+			Foreground(themeColor("#005f87", "#5fd7ff")).
+			Background(themeColor("#d0d0d0", "#3a3a3a"))
 	titleSty = lipgloss.NewStyle().Bold(true)
 	// sectionSty heads a group of rows in a menu: the command palette's own headings.
-	sectionSty = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	// `sh2pil` sets COLORFGBG from system appearance before Bubble Tea starts, so
-	// Lip Gloss can select the right background without an OSC terminal query.
-	selSty = lipgloss.NewStyle().
-		Background(lipgloss.AdaptiveColor{Light: "#e8e8e8", Dark: "#454545"}).
-		Bold(true)
+	sectionSty = lipgloss.NewStyle().Bold(true).Foreground(themeColor("#005f87", "#5fd7ff"))
+	selSty     = lipgloss.NewStyle().
+			Background(themeColor("#e8e8e8", "#454545")).
+			Bold(true)
 	paneSty = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("8"))
+		BorderForeground(themeColor("#777777", "#777777"))
 )
 
 const (
@@ -1995,7 +1997,7 @@ func (m *model) dialogBox(lines []string, width int) string {
 	if m.windowMenu && m.status != "" {
 		lines = append(lines, "", dimSty.Render(trim(m.status, width-4)))
 	}
-	return paneSty.BorderForeground(lipgloss.Color("6")).Padding(0, 2).Width(width).
+	return paneSty.BorderForeground(themeColor("#005f87", "#5fd7ff")).Padding(0, 2).Width(width).
 		Render(strings.Join(lines, "\n"))
 }
 
@@ -2040,7 +2042,7 @@ func (m *model) modalBox() string {
 			lines = append(lines, line)
 		}
 		lines = append(lines, "", dimSty.Render(hint))
-		return paneSty.BorderForeground(lipgloss.Color("6")).Padding(0, 2).Width(width).
+		return paneSty.BorderForeground(themeColor("#005f87", "#5fd7ff")).Padding(0, 2).Width(width).
 			Render(strings.Join(lines, "\n"))
 	}
 	if m.inMenu() {
@@ -2147,7 +2149,7 @@ func (m *model) modalBox() string {
 		}
 	}
 	lines = append(lines, "", dimSty.Render(hint), dimSty.Render("emacs keys edit the name"))
-	return paneSty.BorderForeground(lipgloss.Color("6")).Padding(0, 2).Width(width).
+	return paneSty.BorderForeground(themeColor("#005f87", "#5fd7ff")).Padding(0, 2).Width(width).
 		Render(strings.Join(lines, "\n"))
 }
 
@@ -2200,7 +2202,7 @@ func (m *model) helpView() string {
 	for _, row := range helpRows {
 		lines = append(lines, accentSty.Render(fit(m.helpKeyColumn(row), width))+"  "+row.does)
 	}
-	return paneSty.BorderForeground(lipgloss.Color("6")).Padding(1, 3).
+	return paneSty.BorderForeground(themeColor("#005f87", "#5fd7ff")).Padding(1, 3).
 		Render(strings.Join(lines, "\n"))
 }
 
@@ -2221,7 +2223,7 @@ func (m *model) View() string {
 	if m.showPrev {
 		previewPane := paneSty
 		if m.focus == paneFocusPreview {
-			previewPane = previewPane.BorderForeground(lipgloss.Color("6"))
+			previewPane = previewPane.BorderForeground(themeColor("#005f87", "#5fd7ff"))
 		}
 		panes = lipgloss.JoinHorizontal(lipgloss.Top, panes,
 			previewPane.Width(m.previewWidth()).Height(m.paneHeight()).
@@ -2255,7 +2257,7 @@ func (m *model) View() string {
 func (m *model) leftColumn() string {
 	projectsPane := paneSty
 	if m.focus == paneFocusList && m.view == viewSessions {
-		projectsPane = projectsPane.BorderForeground(lipgloss.Color("6"))
+		projectsPane = projectsPane.BorderForeground(themeColor("#005f87", "#5fd7ff"))
 	}
 	box := projectsPane.Width(m.listWidth()).Height(m.projectsPaneHeight()).
 		Render(clip(m.projectsView(), m.listWidth(), m.projectsPaneHeight()))
@@ -2264,7 +2266,7 @@ func (m *model) leftColumn() string {
 	}
 	zmxPane := paneSty
 	if m.focus == paneFocusList && m.view == viewZmx {
-		zmxPane = zmxPane.BorderForeground(lipgloss.Color("6"))
+		zmxPane = zmxPane.BorderForeground(themeColor("#005f87", "#5fd7ff"))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, box,
 		zmxPane.Width(m.listWidth()).Height(m.zmxPaneHeight()).
