@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -189,14 +190,15 @@ func TestTheWindowDialogAlwaysAsksWhereTheTerminalGoes(t *testing.T) {
 }
 
 // TestWindowMenuOpensTheMenuAtOnce pins the startup the cmd+. dialog relies on: no read of any
-// list, no poll timer, and the menu already open for the window sh2pil-open resolved.
+// list, and the menu already open for the window sh2pil-open resolved. macOS also watches for
+// system appearance changes while the dialog is open.
 func TestWindowMenuOpensTheMenuAtOnce(t *testing.T) {
 	m := &model{windowMenu: true, out: io.Discard, modal: "",
 		windowRow: windowMenuRow("/tmp/repo", ""),
 		live:      map[string]liveInfo{}, cache: map[string]preview{},
 		unread: map[string]bool{}, seen: map[string]string{}}
-	if cmd := m.Init(); cmd != nil {
-		t.Fatal("the dialog must not start a read or a timer")
+	if cmd := m.Init(); (runtime.GOOS == "darwin") != (cmd != nil) {
+		t.Fatalf("appearance watcher command present = %t on %s", cmd != nil, runtime.GOOS)
 	}
 	if m.modal != "tools" || m.askSession.Project != "repo" {
 		t.Fatalf("modal=%q row=%+v, want the menu open on the window's project", m.modal, m.askSession)

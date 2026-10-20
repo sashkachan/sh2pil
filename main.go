@@ -171,6 +171,8 @@ type model struct {
 	zmxHistoryErr    string
 	focus            int // paneFocusList or paneFocusPreview
 	help             bool
+	colorScheme      string // the system light/dark appearance last applied
+	mdStyleOverride  bool   // --md-style or its environment variable disables system style changes
 	layout           string // where a new terminal goes: tab, window, or pane
 	modal            string // a modal owns the keyboard while it is open: see modalBox
 	name             field  // the text field of an open modal
@@ -218,6 +220,7 @@ func main() {
 	printConfig := flag.Bool("print-config", false, "print the effective configuration, then exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	setColorScheme(systemColorScheme())
 	if *showVersion {
 		fmt.Printf("sh2pil %s\n", version)
 		return
@@ -233,7 +236,8 @@ func main() {
 	if *checkConfig {
 		os.Exit(checkConfiguration(os.Stdout, settings))
 	}
-	if *style != "" {
+	mdStyleOverride := *style != ""
+	if mdStyleOverride {
 		markdownStyle = *style
 	} else {
 		markdownStyle = systemMarkdownStyle()
@@ -288,7 +292,8 @@ func main() {
 		live: map[string]liveInfo{}, cache: map[string]preview{},
 		unread: map[string]bool{}, seen: map[string]string{},
 		remoteStates: map[string]liveInfo{}, remoteSeen: map[string]string{},
-		remoteKnown: map[string]bool{}}
+		remoteKnown: map[string]bool{}, colorScheme: systemColorScheme(),
+		mdStyleOverride: mdStyleOverride}
 	if *menu {
 		// An action from the cmd+. dialog opens its own terminal or window, so the dialog is
 		// finished by the time the action is under way: leaving it on screen would cover the
@@ -300,6 +305,39 @@ func main() {
 		fmt.Fprintln(os.Stderr, "sh2pil:", err)
 		os.Exit(1)
 	}
+}
+
+type systemAppearanceMsg struct{ scheme string }
+
+const systemAppearancePollInterval = time.Second
+
+func systemAppearanceTick() tea.Cmd {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	return tea.Tick(systemAppearancePollInterval, func(time.Time) tea.Msg {
+		return systemAppearanceMsg{scheme: systemColorScheme()}
+	})
+}
+
+func (m *model) applySystemAppearance(scheme string) tea.Cmd {
+	next := systemAppearanceTick()
+	if scheme != "light" && scheme != "dark" || scheme == m.colorScheme {
+		return next
+	}
+	m.colorScheme = scheme
+	setColorScheme(scheme)
+	if !m.mdStyleOverride {
+		setSystemMarkdownStyle(scheme)
+		m.preview.width = 0
+		for id, cached := range m.cache {
+			cached.lines, cached.width = nil, 0
+			m.cache[id] = cached
+		}
+		m.wrapped, m.wrapID, m.wrapWidth = nil, "", 0
+		m.clampPreviewScroll()
+	}
+	return next
 }
 
 // systemColorScheme follows the macOS appearance, or COLORFGBG on other systems.
@@ -378,19 +416,24 @@ func (m *model) Init() tea.Cmd {
 		// The window was resolved before this program started, so there is no list to read, no
 		// state to poll, and no notification to raise for a chat nobody is watching here.
 		m.openToolMenuFor(m.windowRow)
-		return nil
+		return systemAppearanceTick()
 	}
 	// One read of this machine, and no SSH connection at all: a remote target connects when it
 	// is first visited, which is when the reader is there to answer a YubiKey touch.  The poll
 	// timer starts after that first read, so it can never fire before the picker has rows.
 	// Focus reporting is asked for first, so a notification knows whether the picker is on
 	// screen before any read can raise one.
-	return tea.Sequence(focusReport(), m.refreshTarget(m.currentTarget()), m.loadLive(),
-		m.stateTick(), remotePollTick())
+	return tea.Batch(
+		tea.Sequence(focusReport(), m.refreshTarget(m.currentTarget()), m.loadLive(),
+			m.stateTick(), remotePollTick()),
+		systemAppearanceTick(),
+	)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case systemAppearanceMsg:
+		return m, m.applySystemAppearance(msg.scheme)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.clampPreviewScroll()

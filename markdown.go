@@ -29,6 +29,14 @@ var markdownCache = struct {
 	width    int
 }{}
 
+func setSystemMarkdownStyle(style string) {
+	markdownCache.Lock()
+	defer markdownCache.Unlock()
+	markdownStyle = style
+	markdownCache.renderer = nil
+	markdownCache.width = 0
+}
+
 // renderMarkdown renders markdown to styled lines, or returns the plain lines when the text,
 // the width, or the terminal makes rendering pointless or impossible.
 func renderMarkdown(text string, width int) []string {

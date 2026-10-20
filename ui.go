@@ -20,6 +20,12 @@ func themeColor(light, dark string) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 }
 
+// setColorScheme overrides Lip Gloss's cached terminal-background detection with the
+// system appearance, so adaptive styles can change while the picker is running.
+func setColorScheme(scheme string) {
+	lipgloss.SetHasDarkBackground(scheme == "dark")
+}
+
 var (
 	dimSty    = lipgloss.NewStyle().Foreground(themeColor("#666666", "#999999"))
 	accentSty = lipgloss.NewStyle().Foreground(themeColor("#005f87", "#5fd7ff"))
